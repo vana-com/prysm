@@ -129,6 +129,48 @@ func configureEth1Config(cliCtx *cli.Context) error {
 			return err
 		}
 	}
+	if cliCtx.IsSet(flags.RetiredDepositContract.Name) {
+		c.RetiredDepositContractAddress = cliCtx.String(flags.RetiredDepositContract.Name)
+		if err := params.SetActive(c); err != nil {
+			return err
+		}
+	}
+	if cliCtx.IsSet(flags.DepositContractSwitchBlock.Name) {
+		c.DepositContractSwitchBlock = cliCtx.Uint64(flags.DepositContractSwitchBlock.Name)
+		if err := params.SetActive(c); err != nil {
+			return err
+		}
+	}
+	// Validate unconditionally: these values may have come from the chain config file rather than
+	// from a flag, and a malformed switch would otherwise only surface as a wedged execution service.
+	return validateDepositContractSwitch(params.BeaconConfig())
+}
+
+// validateDepositContractSwitch rejects a deposit contract switch that cannot be applied coherently.
+// A switch is defined by a retired address and the block at which the current contract takes over,
+// so the two must be supplied together and must not overlap the current contract or the scan floor.
+func validateDepositContractSwitch(c *params.BeaconChainConfig) error {
+	retired := c.RetiredDepositContractAddress
+	switchBlock := c.DepositContractSwitchBlock
+	if retired == "" && switchBlock == 0 {
+		return nil
+	}
+	if retired == "" || switchBlock == 0 {
+		return fmt.Errorf(
+			"deposit contract switch needs both a retired contract and a switch block, got address %q and block %d",
+			retired, switchBlock)
+	}
+	if !common.IsHexAddress(retired) {
+		return fmt.Errorf("invalid retired deposit contract address given: %s", retired)
+	}
+	if common.HexToAddress(retired) == common.HexToAddress(c.DepositContractAddress) {
+		return fmt.Errorf("retired deposit contract %s is the same as the current deposit contract", retired)
+	}
+	if deployment := params.BeaconNetworkConfig().ContractDeploymentBlock; switchBlock <= deployment {
+		return fmt.Errorf(
+			"deposit contract switch block %d must be above the contract deployment block %d, otherwise the retired contract's deposits are never scanned",
+			switchBlock, deployment)
+	}
 	return nil
 }
 

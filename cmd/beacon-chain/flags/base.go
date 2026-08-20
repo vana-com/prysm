@@ -176,6 +176,18 @@ var (
 		Usage: "The eth1 block in which the deposit contract was deployed.",
 		Value: 11184524,
 	}
+	// RetiredDepositContract is the deposit contract used before the switch block.
+	RetiredDepositContract = &cli.StringFlag{
+		Name: "retired-deposit-contract",
+		Usage: "Overrides RETIRED_DEPOSIT_CONTRACT_ADDRESS: the deposit contract used before the switch " +
+			"block. Its logs are still part of this chain's deposit history.",
+	}
+	// DepositContractSwitchBlock is the first eth1 block at which the current deposit contract is authoritative.
+	DepositContractSwitchBlock = &cli.Uint64Flag{
+		Name: "deposit-contract-switch-block",
+		Usage: "Overrides DEPOSIT_CONTRACT_SWITCH_BLOCK: the first eth1 block at which --deposit-contract " +
+			"is authoritative. Below it, only the retired deposit contract is scanned.",
+	}
 	// SetGCPercent is the percentage of current live allocations at which the garbage collector is to run.
 	SetGCPercent = &cli.IntFlag{
 		Name:  "gc-percent",

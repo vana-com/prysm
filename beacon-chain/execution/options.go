@@ -61,6 +61,16 @@ func WithDepositContractAddress(addr common.Address) Option {
 	}
 }
 
+// WithDepositContractSwitch configures the deposit contract this chain used before switchBlock.
+// A zero switchBlock leaves the switch disabled, so only the current deposit contract is scanned.
+func WithDepositContractSwitch(retired common.Address, switchBlock uint64) Option {
+	return func(s *Service) error {
+		s.cfg.retiredDepositContractAddr = retired
+		s.cfg.depositContractSwitchBlock = switchBlock
+		return nil
+	}
+}
+
 // WithDatabase for the beacon chain database.
 func WithDatabase(database db.HeadAccessDatabase) Option {
 	return func(s *Service) error {

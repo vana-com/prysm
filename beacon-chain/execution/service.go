@@ -120,17 +120,22 @@ func (RPCClientEmpty) CallContext(context.Context, any, string, ...any) error {
 
 // config defines a config struct for dependencies into the service.
 type config struct {
-	depositContractAddr     common.Address
-	beaconDB                db.HeadAccessDatabase
-	depositCache            cache.DepositCache
-	stateNotifier           statefeed.Notifier
-	stateGen                *stategen.State
-	eth1HeaderReqLimit      uint64
-	beaconNodeStatsUpdater  BeaconNodeStatsUpdater
-	currHttpEndpoint        network.Endpoint
-	headers                 []string
-	finalizedStateAtStartup state.BeaconState
-	jwtId                   string
+	depositContractAddr common.Address
+	// retiredDepositContractAddr is the deposit contract authoritative below depositContractSwitchBlock.
+	retiredDepositContractAddr common.Address
+	// depositContractSwitchBlock is the first block at which depositContractAddr is authoritative.
+	// Zero means this chain has never switched deposit contracts.
+	depositContractSwitchBlock uint64
+	beaconDB                   db.HeadAccessDatabase
+	depositCache               cache.DepositCache
+	stateNotifier              statefeed.Notifier
+	stateGen                   *stategen.State
+	eth1HeaderReqLimit         uint64
+	beaconNodeStatsUpdater     BeaconNodeStatsUpdater
+	currHttpEndpoint           network.Endpoint
+	headers                    []string
+	finalizedStateAtStartup    state.BeaconState
+	jwtId                      string
 }
 
 // Service fetches important information about the canonical

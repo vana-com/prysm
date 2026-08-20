@@ -110,6 +110,7 @@ type NoHeadAccessDatabase interface {
 	SaveLastValidatedCheckpoint(ctx context.Context, checkpoint *ethpb.Checkpoint) error
 	// Deposit contract related handlers.
 	SaveDepositContractAddress(ctx context.Context, addr common.Address) error
+	ClearDepositContractAddress(ctx context.Context) error
 	// SaveExecutionChainData operations.
 	SaveExecutionChainData(ctx context.Context, data *ethpb.ETH1ChainData) error
 	// Run any required database migrations.

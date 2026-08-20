@@ -39,8 +39,9 @@ func UnmarshalConfig(yamlFile []byte, conf *BeaconChainConfig) (*BeaconChainConf
 		}
 	}
 	for i, line := range lines {
-		// No need to convert the deposit contract address to byte array (as config expects a string).
-		if strings.HasPrefix(line, "DEPOSIT_CONTRACT_ADDRESS") {
+		// No need to convert the deposit contract addresses to byte arrays (as config expects strings).
+		if strings.HasPrefix(line, "DEPOSIT_CONTRACT_ADDRESS") ||
+			strings.HasPrefix(line, "RETIRED_DEPOSIT_CONTRACT_ADDRESS") {
 			continue
 		}
 		if strings.HasPrefix(line, "CONFIG_NAME") {

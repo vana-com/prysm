@@ -60,9 +60,10 @@ func (s *Service) GenesisExecutionChainInfo() (uint64, *big.Int) {
 
 // ProcessETH1Block processes logs from the provided eth1 block.
 func (s *Service) ProcessETH1Block(ctx context.Context, blkNum *big.Int) error {
+	addr, _ := s.depositContractForBlock(blkNum.Uint64())
 	query := ethereum.FilterQuery{
 		Addresses: []common.Address{
-			s.cfg.depositContractAddr,
+			addr,
 		},
 		FromBlock: blkNum,
 		ToBlock:   blkNum,
@@ -95,6 +96,15 @@ func (s *Service) ProcessLog(ctx context.Context, depositLog *gethtypes.Log) err
 	defer s.processingLock.RUnlock()
 	// Process logs according to their event signature.
 	if depositLog.Topics[0] == depositEventSignature {
+		// Only the contract authoritative for this block may contribute deposits. The filter query
+		// already restricts by address, so this should be unreachable; it is enforced here so that a
+		// retired contract which starts emitting again can never be folded into the deposit trie.
+		// Failing is deliberate rather than skipping: an unexpected deposit log means the merkle
+		// index sequence can no longer be trusted, and continuing would corrupt the tree.
+		if expected, _ := s.depositContractForBlock(depositLog.BlockNumber); depositLog.Address != expected {
+			return errors.Errorf("deposit log from unexpected contract %#x at block %d, wanted %#x",
+				depositLog.Address, depositLog.BlockNumber, expected)
+		}
 		if err := s.ProcessDepositLog(ctx, depositLog); err != nil {
 			return errors.Wrap(err, "Could not process deposit log")
 		}
@@ -379,21 +389,28 @@ func (s *Service) processBlockInBatch(ctx context.Context, currentBlockNum uint6
 	// Appropriately bound the request, as we do not
 	// want request blocks beyond the current follow distance.
 	end = min(end, latestFollowHeight)
-	query := ethereum.FilterQuery{
-		Addresses: []common.Address{
-			s.cfg.depositContractAddr,
-		},
-		FromBlock: new(big.Int).SetUint64(start),
-		ToBlock:   new(big.Int).SetUint64(end),
-	}
 	remainingLogs := logCount - uint64(s.lastReceivedMerkleIndex+1)
 	// only change the end block if the remaining logs are below the required log limit.
-	// reset our query and end block in this case.
+	// reset our end block in this case.
 	withinLimit := remainingLogs < depositLogRequestLimit
 	aboveFollowHeight := end >= latestFollowHeight
 	if withinLimit && aboveFollowHeight {
-		query.ToBlock = new(big.Int).SetUint64(latestFollowHeight)
 		end = latestFollowHeight
+	}
+	// A batch must never span the deposit contract switch, as the authoritative contract differs on
+	// either side of it. Clamping after every other adjustment keeps the boundary from being crossed
+	// by the extension above.
+	addr, boundary := s.depositContractForBlock(start)
+	clampedToBoundary := boundary != 0 && end >= boundary
+	if clampedToBoundary {
+		end = boundary - 1
+	}
+	query := ethereum.FilterQuery{
+		Addresses: []common.Address{
+			addr,
+		},
+		FromBlock: new(big.Int).SetUint64(start),
+		ToBlock:   new(big.Int).SetUint64(end),
 	}
 	logs, err := s.httpLogger.FilterLogs(ctx, query)
 	if err != nil {
@@ -446,6 +463,13 @@ func (s *Service) processBlockInBatch(ctx context.Context, currentBlockNum uint6
 		return 0, 0, err
 	}
 	currentBlockNum = end
+	// Callers resume from the returned block, so a batch that ends where it started makes no
+	// progress and would spin forever. That happens when the clamp above pins end to the last block
+	// below the switch and the batch already started there. That block has now been scanned, so
+	// cross the boundary rather than returning our own input.
+	if clampedToBoundary && currentBlockNum <= start {
+		currentBlockNum = boundary
+	}
 
 	if batchSize < s.cfg.eth1HeaderReqLimit {
 		// update the batchSize with additive increase

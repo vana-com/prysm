@@ -200,6 +200,13 @@ var (
 		Name:  "clear-db",
 		Usage: "Prompt for clearing any previously stored data at the data directory.",
 	}
+	// ClearDepositContract removes only the stored deposit contract address, leaving all other data intact.
+	ClearDepositContract = &cli.BoolFlag{
+		Name: "clear-deposit-contract",
+		Usage: "Clears only the deposit contract address recorded in the database, leaving all other data " +
+			"intact. The address is re-recorded from the current configuration on this same start. Use when " +
+			"intentionally migrating to a new deposit contract, instead of wiping the whole database.",
+	}
 	// LogFormat specifies the log output format.
 	LogFormat = &cli.StringFlag{
 		Name:  "log-format",

@@ -531,6 +531,27 @@ func (b *BeaconNode) Close() {
 	close(b.stop)
 }
 
+// clearDepositContractAddress removes only the deposit contract address recorded in the database,
+// so that checkAndSaveDepositContract records the configured address again on this same start. All
+// other data is left untouched, which is what distinguishes this from clearing the whole database.
+func (b *BeaconNode) clearDepositContractAddress() error {
+	knownContract, err := b.db.DepositContractAddress(b.ctx)
+	if err != nil {
+		return errors.Wrap(err, "could not get deposit contract address")
+	}
+	if len(knownContract) == 0 {
+		return nil
+	}
+
+	if err := b.db.ClearDepositContractAddress(b.ctx); err != nil {
+		return errors.Wrap(err, "could not clear deposit contract address")
+	}
+
+	log.WithField("previousAddress", fmt.Sprintf("%#x", knownContract)).
+		Warn("Cleared the stored deposit contract address; it will be recorded again from the current configuration")
+	return nil
+}
+
 func (b *BeaconNode) checkAndSaveDepositContract(depositAddress string) error {
 	knownContract, err := b.db.DepositContractAddress(b.ctx)
 	if err != nil {
@@ -595,6 +616,12 @@ func (b *BeaconNode) startDB(cliCtx *cli.Context, depositAddress string) error {
 	if b.CheckpointInitializer != nil {
 		log.Info("Checkpoint sync - Downloading origin state and block")
 		if err := b.CheckpointInitializer.Initialize(b.ctx, b.db); err != nil {
+			return err
+		}
+	}
+
+	if cliCtx.Bool(cmd.ClearDepositContract.Name) {
+		if err := b.clearDepositContractAddress(); err != nil {
 			return err
 		}
 	}
@@ -814,6 +841,10 @@ func (b *BeaconNode) registerPOWChainService() error {
 	opts := append(
 		b.serviceFlagOpts.executionChainFlagOpts,
 		execution.WithDepositContractAddress(common.HexToAddress(depositContractAddr)),
+		execution.WithDepositContractSwitch(
+			common.HexToAddress(params.BeaconConfig().RetiredDepositContractAddress),
+			params.BeaconConfig().DepositContractSwitchBlock,
+		),
 		execution.WithDatabase(b.db),
 		execution.WithDepositCache(b.depositCache),
 		execution.WithStateNotifier(b),

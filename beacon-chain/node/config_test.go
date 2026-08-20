@@ -191,3 +191,101 @@ func TestAliasFlag(t *testing.T) {
 	// Check if the alias set the flag correctly
 	assert.NoError(t, err)
 }
+
+func TestValidateDepositContractSwitch(t *testing.T) {
+	const current = "0x1111111111111111111111111111111111111111"
+	const retired = "0x2222222222222222222222222222222222222222"
+
+	tests := []struct {
+		name        string
+		retired     string
+		switchBlock uint64
+		deployment  uint64
+		wantErr     string
+	}{
+		{name: "unset is allowed"},
+		{name: "fully configured", retired: retired, switchBlock: 500, deployment: 100},
+		{
+			name:    "address without a switch block",
+			retired: retired,
+			wantErr: "needs both a retired contract and a switch block",
+		},
+		{
+			name:        "switch block without an address",
+			switchBlock: 500,
+			wantErr:     "needs both a retired contract and a switch block",
+		},
+		{
+			name:        "malformed address",
+			retired:     "not-an-address",
+			switchBlock: 500,
+			wantErr:     "invalid retired deposit contract address",
+		},
+		{
+			name:        "retired same as current",
+			retired:     current,
+			switchBlock: 500,
+			wantErr:     "same as the current deposit contract",
+		},
+		{
+			name:        "switch block at the deployment block",
+			retired:     retired,
+			switchBlock: 100,
+			deployment:  100,
+			wantErr:     "must be above the contract deployment block",
+		},
+		{
+			name:        "switch block below the deployment block",
+			retired:     retired,
+			switchBlock: 50,
+			deployment:  100,
+			wantErr:     "must be above the contract deployment block",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params.SetupTestConfigCleanup(t)
+
+			netCfg := params.BeaconNetworkConfig().Copy()
+			netCfg.ContractDeploymentBlock = tt.deployment
+			params.OverrideBeaconNetworkConfig(netCfg)
+
+			c := params.BeaconConfig().Copy()
+			c.DepositContractAddress = current
+			c.RetiredDepositContractAddress = tt.retired
+			c.DepositContractSwitchBlock = tt.switchBlock
+
+			err := validateDepositContractSwitch(c)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.NotNil(t, err)
+			assert.StringContains(t, tt.wantErr, err.Error())
+		})
+	}
+}
+
+func TestConfigureEth1Config_DepositContractSwitchFlags(t *testing.T) {
+	params.SetupTestConfigCleanup(t)
+
+	netCfg := params.BeaconNetworkConfig().Copy()
+	netCfg.ContractDeploymentBlock = 100
+	params.OverrideBeaconNetworkConfig(netCfg)
+
+	const retired = "0x2222222222222222222222222222222222222222"
+
+	app := cli.App{}
+	set := flag.NewFlagSet("test", 0)
+	set.String(flags.DepositContractFlag.Name, "", "")
+	set.String(flags.RetiredDepositContract.Name, "", "")
+	set.Uint64(flags.DepositContractSwitchBlock.Name, 0, "")
+	require.NoError(t, set.Set(flags.DepositContractFlag.Name, "0x1111111111111111111111111111111111111111"))
+	require.NoError(t, set.Set(flags.RetiredDepositContract.Name, retired))
+	require.NoError(t, set.Set(flags.DepositContractSwitchBlock.Name, "500"))
+
+	require.NoError(t, configureEth1Config(cli.NewContext(&app, set, nil)))
+	assert.Equal(t, retired, params.BeaconConfig().RetiredDepositContractAddress)
+	assert.Equal(t, uint64(500), params.BeaconConfig().DepositContractSwitchBlock)
+}

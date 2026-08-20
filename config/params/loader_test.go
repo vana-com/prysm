@@ -444,3 +444,30 @@ func assertYamlFieldsMatch(t *testing.T, name string, fields []string, c1, c2 *p
 func isPlaceholderField(field string) bool {
 	return slices.Contains(placeholderFields, field)
 }
+
+// TestUnmarshalConfig_DepositContractSwitch guards the loader's hex skip-list: both deposit contract
+// addresses are string fields, so the 0x-to-byte-array rewrite must leave them alone.
+func TestUnmarshalConfig_DepositContractSwitch(t *testing.T) {
+	const retired = "0x2222222222222222222222222222222222222222"
+	const current = "0x1111111111111111111111111111111111111111"
+
+	y := `CONFIG_NAME: test
+DEPOSIT_CONTRACT_ADDRESS: ` + current + `
+RETIRED_DEPOSIT_CONTRACT_ADDRESS: ` + retired + `
+DEPOSIT_CONTRACT_SWITCH_BLOCK: 500
+`
+	cfg, err := params.UnmarshalConfig([]byte(y), nil)
+	require.NoError(t, err)
+	assert.Equal(t, current, cfg.DepositContractAddress)
+	assert.Equal(t, retired, cfg.RetiredDepositContractAddress, "retired address was rewritten by the hex conversion")
+	assert.Equal(t, uint64(500), cfg.DepositContractSwitchBlock)
+}
+
+// TestUnmarshalConfig_DepositContractSwitchDefaults pins that a config file without the switch keys
+// leaves the feature disabled, so existing deployments are unaffected.
+func TestUnmarshalConfig_DepositContractSwitchDefaults(t *testing.T) {
+	cfg, err := params.UnmarshalConfig([]byte("CONFIG_NAME: test\n"), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.RetiredDepositContractAddress)
+	assert.Equal(t, uint64(0), cfg.DepositContractSwitchBlock)
+}

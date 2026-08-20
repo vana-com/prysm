@@ -29,6 +29,19 @@ func (s *Store) DepositContractAddress(ctx context.Context) ([]byte, error) {
 	return addr, nil
 }
 
+// ClearDepositContractAddress removes the stored deposit contract address, leaving every other
+// bucket untouched. SaveDepositContractAddress is write-once, so clearing the key is how an
+// operator intentionally migrating to a new deposit contract lets the node re-record the address
+// from its current configuration without wiping the whole database.
+func (s *Store) ClearDepositContractAddress(ctx context.Context) error {
+	_, span := trace.StartSpan(ctx, "BeaconDB.ClearDepositContractAddress")
+	defer span.End()
+
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(chainMetadataBucket).Delete(depositContractAddressKey)
+	})
+}
+
 // SaveDepositContractAddress to the db. It returns an error if an address has been previously saved.
 func (s *Store) SaveDepositContractAddress(ctx context.Context, addr common.Address) error {
 	_, span := trace.StartSpan(ctx, "BeaconDB.VerifyContractAddress")
