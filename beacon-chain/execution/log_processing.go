@@ -397,33 +397,28 @@ func (s *Service) processBlockInBatch(ctx context.Context, currentBlockNum uint6
 	if withinLimit && aboveFollowHeight {
 		end = latestFollowHeight
 	}
-	// A batch must never span the deposit contract switch, as the authoritative contract differs on
-	// either side of it. Clamping after every other adjustment keeps the boundary from being crossed
-	// by the extension above.
-	addr, boundary := s.depositContractForBlock(start)
-	clampedToBoundary := boundary != 0 && end >= boundary
-	if clampedToBoundary {
-		end = boundary - 1
-	}
-	query := ethereum.FilterQuery{
-		Addresses: []common.Address{
-			addr,
-		},
-		FromBlock: new(big.Int).SetUint64(start),
-		ToBlock:   new(big.Int).SetUint64(end),
-	}
-	logs, err := s.httpLogger.FilterLogs(ctx, query)
-	if err != nil {
-		if tooMuchDataRequestedError(err) {
-			if batchSize == 0 {
-				return 0, 0, errors.New("batch size is zero")
-			}
+	// The authoritative deposit contract differs on either side of the switch block, so a batch
+	// spanning it is served by one query per contract rather than by shortening the batch. Keeping
+	// end untouched matters: the caller records it as the last scanned block and later resumes above
+	// it, so a batch must never report a block it did not query, and must always move forward.
+	queries := s.depositLogQueries(start, end)
+	var logs []gethtypes.Log
+	for _, query := range queries {
+		part, err := s.httpLogger.FilterLogs(ctx, query)
+		if err != nil {
+			if tooMuchDataRequestedError(err) {
+				if batchSize == 0 {
+					return 0, 0, errors.New("batch size is zero")
+				}
 
-			// multiplicative decrease
-			batchSize /= multiplicativeDecreaseDivisor
-			return currentBlockNum, batchSize, nil
+				// multiplicative decrease
+				batchSize /= multiplicativeDecreaseDivisor
+				return currentBlockNum, batchSize, nil
+			}
+			return 0, 0, err
 		}
-		return 0, 0, err
+		// Ranges are ascending and disjoint, so appending keeps the logs in block order.
+		logs = append(logs, part...)
 	}
 	// Only request headers before chainstart to correctly determine
 	// genesis.
@@ -463,13 +458,6 @@ func (s *Service) processBlockInBatch(ctx context.Context, currentBlockNum uint6
 		return 0, 0, err
 	}
 	currentBlockNum = end
-	// Callers resume from the returned block, so a batch that ends where it started makes no
-	// progress and would spin forever. That happens when the clamp above pins end to the last block
-	// below the switch and the batch already started there. That block has now been scanned, so
-	// cross the boundary rather than returning our own input.
-	if clampedToBoundary && currentBlockNum <= start {
-		currentBlockNum = boundary
-	}
 
 	if batchSize < s.cfg.eth1HeaderReqLimit {
 		// update the batchSize with additive increase
