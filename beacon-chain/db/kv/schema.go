@@ -42,6 +42,7 @@ var (
 	headBlockRootKey           = []byte("head-root")
 	genesisBlockRootKey        = []byte("genesis-root")
 	depositContractAddressKey  = []byte("deposit-contract")
+	depositContractSwitchKey   = []byte("deposit-contract-switch")
 	justifiedCheckpointKey     = []byte("justified-checkpoint")
 	finalizedCheckpointKey     = []byte("finalized-checkpoint")
 	powchainDataKey            = []byte("powchain-data")

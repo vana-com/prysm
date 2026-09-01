@@ -5,6 +5,8 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/OffchainLabs/prysm/v7/beacon-chain/db"
+	dbtest "github.com/OffchainLabs/prysm/v7/beacon-chain/db/testing"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/execution/types"
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/testing/assert"
@@ -306,5 +308,73 @@ func TestProcessLog_RejectsDepositFromUnexpectedContract(t *testing.T) {
 			Topics:      []common.Hash{{'n', 'o', 'p', 'e'}},
 		}
 		require.NoError(t, s.ProcessLog(t.Context(), other))
+	})
+}
+
+// TestApplyDepositContractSwitchMigration covers the upgrade path a node takes when a switch is
+// configured on a database that was built without one. The scan cursor only moves forward and
+// advances whether or not a block held a deposit, so such a cursor can already sit above the switch
+// block while the current contract was never read below it. Resuming there drops those deposits
+// silently, and the next one then fails the sequential index check for good.
+func TestApplyDepositContractSwitchMigration(t *testing.T) {
+	const switchBlock = 100
+
+	newService := func(t *testing.T, switchBlk, cursor uint64) (*Service, db.HeadAccessDatabase) {
+		beaconDB := dbtest.SetupDB(t)
+		s := switchService(&capturingLogger{}, switchBlk)
+		s.cfg.beaconDB = beaconDB
+		s.latestEth1Data = &ethpb.LatestETH1Data{LastRequestedBlock: cursor}
+		return s, beaconDB
+	}
+
+	t.Run("rewinds a cursor that ran past the switch before it was configured", func(t *testing.T) {
+		s, beaconDB := newService(t, switchBlock, 5000)
+		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
+		assert.Equal(t, uint64(switchBlock), s.latestEth1Data.LastRequestedBlock,
+			"the range between the switch and the cursor would never be scanned")
+
+		applied, found, err := beaconDB.AppliedDepositContractSwitch(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, true, found)
+		assert.Equal(t, uint64(switchBlock), applied)
+	})
+
+	t.Run("runs once, so a later start does not rescan", func(t *testing.T) {
+		s, beaconDB := newService(t, switchBlock, 5000)
+		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
+		require.Equal(t, uint64(switchBlock), s.latestEth1Data.LastRequestedBlock)
+
+		// Simulate the node having scanned onwards, then restarting against the same database.
+		s2 := switchService(&capturingLogger{}, switchBlock)
+		s2.cfg.beaconDB = beaconDB
+		s2.latestEth1Data = &ethpb.LatestETH1Data{LastRequestedBlock: 9000}
+		require.NoError(t, s2.applyDepositContractSwitchMigration(t.Context()))
+		assert.Equal(t, uint64(9000), s2.latestEth1Data.LastRequestedBlock, "rewound a second time")
+	})
+
+	t.Run("a different switch block migrates again", func(t *testing.T) {
+		s, beaconDB := newService(t, switchBlock, 5000)
+		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
+
+		s2 := switchService(&capturingLogger{}, 3000)
+		s2.cfg.beaconDB = beaconDB
+		s2.latestEth1Data = &ethpb.LatestETH1Data{LastRequestedBlock: 9000}
+		require.NoError(t, s2.applyDepositContractSwitchMigration(t.Context()))
+		assert.Equal(t, uint64(3000), s2.latestEth1Data.LastRequestedBlock)
+	})
+
+	t.Run("leaves a cursor below the switch alone", func(t *testing.T) {
+		s, _ := newService(t, switchBlock, 40)
+		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
+		assert.Equal(t, uint64(40), s.latestEth1Data.LastRequestedBlock)
+	})
+
+	t.Run("does nothing when no switch is configured", func(t *testing.T) {
+		s, beaconDB := newService(t, 0, 5000)
+		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
+		assert.Equal(t, uint64(5000), s.latestEth1Data.LastRequestedBlock)
+		_, found, err := beaconDB.AppliedDepositContractSwitch(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, false, found, "recorded a migration for a chain that never switched")
 	})
 }

@@ -222,6 +222,10 @@ func NewService(ctx context.Context, opts ...Option) (*Service, error) {
 	if err := s.initializeEth1Data(ctx, eth1Data); err != nil {
 		return nil, err
 	}
+	// Must follow initializeEth1Data, which is what restores the persisted scan cursor this reads.
+	if err := s.applyDepositContractSwitchMigration(ctx); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 

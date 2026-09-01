@@ -1,10 +1,13 @@
 package execution
 
 import (
+	"context"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 // depositContractForBlock returns the deposit contract that is authoritative for blkNum, along with
@@ -23,6 +26,50 @@ func (s *Service) depositContractForBlock(blkNum uint64) (common.Address, uint64
 		return s.cfg.depositContractAddr, 0
 	}
 	return s.cfg.retiredDepositContractAddr, s.cfg.depositContractSwitchBlock
+}
+
+// applyDepositContractSwitchMigration rewinds the deposit log scan to the switch block the first
+// time a given switch is configured on this database.
+//
+// The scan cursor only ever moves forward, and it advances whether or not a block held any deposit.
+// A node that synced before the switch was configured therefore has a cursor built while only the
+// retired contract was being read, and that cursor may already sit above the switch block. Resuming
+// from it would query the current contract from there on and never request the deposits it emitted
+// between the switch block and the cursor. Those gaps do not announce themselves: the next deposit
+// simply fails the sequential merkle index check and the scan wedges for good.
+//
+// Rewinding is safe to repeat -- already-known deposits are skipped by index -- but rescanning from
+// the switch on every start would grow without bound, so the applied switch is recorded and the
+// rewind happens once. Reconfiguring a different switch block records anew and migrates again.
+func (s *Service) applyDepositContractSwitchMigration(ctx context.Context) error {
+	switchBlock := s.cfg.depositContractSwitchBlock
+	if switchBlock == 0 {
+		return nil
+	}
+
+	applied, found, err := s.cfg.beaconDB.AppliedDepositContractSwitch(ctx)
+	if err != nil {
+		return errors.Wrap(err, "could not read applied deposit contract switch")
+	}
+	if found && applied == switchBlock {
+		return nil
+	}
+
+	s.latestEth1DataLock.Lock()
+	cursor := s.latestEth1Data.LastRequestedBlock
+	if cursor > switchBlock {
+		s.latestEth1Data.LastRequestedBlock = switchBlock
+	}
+	s.latestEth1DataLock.Unlock()
+
+	if cursor > switchBlock {
+		log.WithFields(logrus.Fields{
+			"previousBlock": cursor,
+			"switchBlock":   switchBlock,
+		}).Warn("Rewinding deposit log scan to the deposit contract switch block, as the scan " +
+			"reached past it before the switch was configured and so never read the current contract there")
+	}
+	return s.cfg.beaconDB.SaveAppliedDepositContractSwitch(ctx, switchBlock)
 }
 
 // depositLogQueries returns the filter queries needed to read every deposit log in [start, end],

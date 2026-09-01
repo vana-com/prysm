@@ -48,3 +48,27 @@ func TestStore_ClearDepositContractAddress(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, otherAddress, common.BytesToAddress(retrieved), "Unexpected address after clearing")
 }
+
+func TestStore_AppliedDepositContractSwitch(t *testing.T) {
+	db := setupDB(t)
+	ctx := t.Context()
+
+	// Absent is reported as not-found rather than zero, so that a switch at block 0 stays
+	// distinguishable from no switch ever having been applied.
+	block, found, err := db.AppliedDepositContractSwitch(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, false, found)
+	assert.Equal(t, uint64(0), block)
+
+	require.NoError(t, db.SaveAppliedDepositContractSwitch(ctx, 2804))
+	block, found, err = db.AppliedDepositContractSwitch(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, found)
+	assert.Equal(t, uint64(2804), block)
+
+	// Reconfiguring to a different switch overwrites, so the migration runs again for it.
+	require.NoError(t, db.SaveAppliedDepositContractSwitch(ctx, 5000))
+	block, _, err = db.AppliedDepositContractSwitch(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(5000), block)
+}
