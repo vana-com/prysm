@@ -141,14 +141,18 @@ func configureEth1Config(cliCtx *cli.Context) error {
 			return err
 		}
 	}
-	// Validate unconditionally: these values may have come from the chain config file rather than
-	// from a flag, and a malformed switch would otherwise only surface as a wedged execution service.
-	return validateDepositContractSwitch(params.BeaconConfig())
+	return nil
 }
 
 // validateDepositContractSwitch rejects a deposit contract switch that cannot be applied coherently.
 // A switch is defined by a retired address and the block at which the current contract takes over,
 // so the two must be supplied together and must not overlap the current contract or the scan floor.
+//
+// It compares against ContractDeploymentBlock, which configureNetwork may override, so it has to run
+// after every chain and network override has been applied rather than at the end of whichever
+// configure step happens to set the switch. Validating unconditionally also matters, because these
+// values can arrive from the chain config file with no flag set at all, and a malformed switch would
+// otherwise surface only as a wedged execution service.
 func validateDepositContractSwitch(c *params.BeaconChainConfig) error {
 	retired := c.RetiredDepositContractAddress
 	switchBlock := c.DepositContractSwitchBlock

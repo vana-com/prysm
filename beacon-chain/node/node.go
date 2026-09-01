@@ -331,6 +331,13 @@ func configureBeacon(cliCtx *cli.Context) error {
 		return errors.Wrap(err, "could not configure execution setting")
 	}
 
+	// Runs last on purpose: the deposit contract switch is checked against the deployment block,
+	// which configureNetwork above may have overridden, so validating any earlier would compare
+	// against a value the node will not actually use.
+	if err := validateDepositContractSwitch(params.BeaconConfig()); err != nil {
+		return errors.Wrap(err, "could not configure deposit contract switch")
+	}
+
 	return nil
 }
 
