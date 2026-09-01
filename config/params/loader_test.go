@@ -101,6 +101,8 @@ func assertEqualConfigs(t *testing.T, name string, fields []string, expected, ac
 	assert.Equal(t, expected.DepositChainID, actual.DepositChainID, "%s: DepositChainID", name)
 	assert.Equal(t, expected.DepositNetworkID, actual.DepositNetworkID, "%s: DepositNetworkID", name)
 	assert.Equal(t, expected.DepositContractAddress, actual.DepositContractAddress, "%s: DepositContractAddress", name)
+	assert.Equal(t, expected.RetiredDepositContractAddress, actual.RetiredDepositContractAddress, "%s: RetiredDepositContractAddress", name)
+	assert.Equal(t, expected.DepositContractSwitchBlock, actual.DepositContractSwitchBlock, "%s: DepositContractSwitchBlock", name)
 
 	// Gwei values.
 	assert.Equal(t, expected.MinDepositAmount, actual.MinDepositAmount, "%s: MinDepositAmount", name)
@@ -470,4 +472,37 @@ func TestUnmarshalConfig_DepositContractSwitchDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", cfg.RetiredDepositContractAddress)
 	assert.Equal(t, uint64(0), cfg.DepositContractSwitchBlock)
+}
+
+// TestConfigToYaml_DepositContractSwitchRoundTrip guards the serialiser against silently dropping the
+// deposit contract switch. ConfigToYaml is what the end-to-end components write for their nodes, so a
+// missing key there means a test that configures a switch quietly exercises the no-switch path.
+func TestConfigToYaml_DepositContractSwitchRoundTrip(t *testing.T) {
+	const (
+		current = "0x1111111111111111111111111111111111111111"
+		retired = "0x2222222222222222222222222222222222222222"
+	)
+
+	cfg := params.MainnetConfig().Copy()
+	cfg.DepositContractAddress = current
+	cfg.RetiredDepositContractAddress = retired
+	cfg.DepositContractSwitchBlock = 2804
+
+	got, err := params.UnmarshalConfig(params.ConfigToYaml(cfg), nil)
+	require.NoError(t, err)
+	assert.Equal(t, current, got.DepositContractAddress)
+	assert.Equal(t, retired, got.RetiredDepositContractAddress, "the switch was lost in serialisation")
+	assert.Equal(t, uint64(2804), got.DepositContractSwitchBlock, "the switch was lost in serialisation")
+}
+
+// TestConfigToYaml_NoSwitchRoundTrip pins the far commoner case: a config with no switch must come
+// back with none, rather than an empty address being read as something set.
+func TestConfigToYaml_NoSwitchRoundTrip(t *testing.T) {
+	cfg := params.MainnetConfig().Copy()
+	require.Equal(t, "", cfg.RetiredDepositContractAddress)
+
+	got, err := params.UnmarshalConfig(params.ConfigToYaml(cfg), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "", got.RetiredDepositContractAddress)
+	assert.Equal(t, uint64(0), got.DepositContractSwitchBlock)
 }
