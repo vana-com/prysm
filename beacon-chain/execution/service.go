@@ -57,6 +57,12 @@ var (
 		Name: "powchain_missed_deposit_logs",
 		Help: "The number of times a missed deposit log is detected",
 	})
+	unexpectedDepositContractLogsCount = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "powchain_unexpected_deposit_contract_logs",
+		Help: "The number of deposit logs rejected for coming from a contract that is not " +
+			"authoritative for their block, which means a misconfigured deposit contract switch " +
+			"or a retired contract that started emitting again",
+	})
 )
 
 var (
@@ -571,10 +577,16 @@ func (s *Service) initPOWService() {
 				if err := s.processPastLogs(ctx); err != nil {
 					err = errors.Wrap(err, "processPastLogs")
 					s.retryExecutionClientConnection(ctx, err)
-					errorLogger(
-						err,
-						"Unable to process past deposit contract logs, perhaps your execution client is not fully synced",
-					)
+					// A deposit log from the wrong contract is a configuration problem, not a
+					// symptom of a lagging execution client, and retrying will not clear it. Saying
+					// so keeps the default message from sending operators to the wrong component.
+					msg := "Unable to process past deposit contract logs, perhaps your execution client is not fully synced"
+					if errors.Is(err, errUnexpectedDepositContract) {
+						msg = "Unable to process past deposit contract logs: a deposit log came from a " +
+							"contract that is not authoritative for its block. Check the deposit contract " +
+							"switch configuration; this will not resolve by retrying"
+					}
+					errorLogger(err, msg)
 					continue
 				}
 				// Cache eth1 headers from our voting period.

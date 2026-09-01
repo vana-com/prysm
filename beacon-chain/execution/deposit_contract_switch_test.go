@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	gethTypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/pkg/errors"
 )
 
 var (
@@ -271,6 +272,61 @@ func TestProcessBlockInBatch_BookmarkIsAlwaysScanned(t *testing.T) {
 	})
 }
 
+// TestDepositSwitchHint checks the operator-facing half of a switch failure. Without this text the
+// only thing surfacing is initPOWService's rate-limited retry message, which blames the execution
+// client, so a node stopped by its own switch configuration looks like one that is merely behind.
+func TestDepositSwitchHint(t *testing.T) {
+	t.Run("names the switch for a block at or above it", func(t *testing.T) {
+		s := switchService(&capturingLogger{}, 100)
+		for _, blk := range []uint64{100, 5000} {
+			hint := s.depositSwitchHint(blk)
+			require.NotEqual(t, "", hint, "no hint for block %d", blk)
+			assert.StringContains(t, "deposit contract switch block 100", hint)
+			assert.StringContains(t, retiredContract.Hex(), hint)
+			assert.StringContains(t, currentContract.Hex(), hint)
+			assert.StringContains(t, "before the execution client", hint)
+		}
+	})
+
+	t.Run("stays silent below the switch and when unconfigured", func(t *testing.T) {
+		s := switchService(&capturingLogger{}, 100)
+		assert.Equal(t, "", s.depositSwitchHint(99))
+		assert.Equal(t, "", switchService(&capturingLogger{}, 0).depositSwitchHint(5000))
+	})
+
+	t.Run("reaches the errors an operator actually sees", func(t *testing.T) {
+		s := switchService(&capturingLogger{}, 100)
+		err := s.ProcessLog(t.Context(), &gethTypes.Log{
+			Address:     retiredContract,
+			BlockNumber: 150,
+			Topics:      []common.Hash{depositEventSignature},
+		})
+		require.NotNil(t, err)
+		assert.StringContains(t, "deposit contract switch block 100", err.Error())
+	})
+}
+
+// TestUnexpectedDepositContractIsIdentifiable pins that the address guard stays distinguishable
+// after wrapping. initPOWService matches on the sentinel to replace its default message, which
+// blames the execution client, so losing it here silently restores the misleading report.
+func TestUnexpectedDepositContractIsIdentifiable(t *testing.T) {
+	s := switchService(&capturingLogger{}, 100)
+	err := s.ProcessLog(t.Context(), &gethTypes.Log{
+		Address:     retiredContract,
+		BlockNumber: 150,
+		Topics:      []common.Hash{depositEventSignature},
+	})
+	require.NotNil(t, err)
+
+	// The chain the error actually travels: ProcessLog, then the batch, then the historical scan.
+	wrapped := errors.Wrap(errors.Wrap(err, "could not process log"), "processPastLogs")
+	require.Equal(t, true, errors.Is(wrapped, errUnexpectedDepositContract),
+		"sentinel lost through wrapping, so the retry loop falls back to blaming the execution client")
+
+	// An unrelated failure must not be mistaken for it.
+	require.Equal(t, false, errors.Is(errors.New("some execution client failure"), errUnexpectedDepositContract))
+}
+
 // TestProcessBlockInBatch_UnknownDepositCount covers the deposit count being unreadable, which
 // happens legitimately when a switch is configured before the current contract is deployed. The
 // count reaches only a batch-widening branch and nothing that decides which blocks are queried, so
@@ -328,14 +384,14 @@ func TestProcessLog_RejectsDepositFromUnexpectedContract(t *testing.T) {
 		s := switchService(&capturingLogger{}, 100)
 		err := s.ProcessLog(t.Context(), depositLog(retiredContract, 150))
 		require.NotNil(t, err, "expected a deposit from the retired contract to be rejected")
-		assert.StringContains(t, "unexpected contract", err.Error())
+		require.Equal(t, true, errors.Is(err, errUnexpectedDepositContract))
 	})
 
 	t.Run("current contract emitting before the switch is rejected", func(t *testing.T) {
 		s := switchService(&capturingLogger{}, 100)
 		err := s.ProcessLog(t.Context(), depositLog(currentContract, 50))
 		require.NotNil(t, err, "expected a deposit from the current contract below the switch to be rejected")
-		assert.StringContains(t, "unexpected contract", err.Error())
+		require.Equal(t, true, errors.Is(err, errUnexpectedDepositContract))
 	})
 
 	t.Run("non deposit events are not address checked", func(t *testing.T) {

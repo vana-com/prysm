@@ -110,8 +110,11 @@ func (s *Service) ProcessLog(ctx context.Context, depositLog *gethtypes.Log) err
 		// Failing is deliberate rather than skipping: an unexpected deposit log means the merkle
 		// index sequence can no longer be trusted, and continuing would corrupt the tree.
 		if expected, _ := s.depositContractForBlock(depositLog.BlockNumber); depositLog.Address != expected {
-			return errors.Errorf("deposit log from unexpected contract %#x at block %d, wanted %#x",
-				depositLog.Address, depositLog.BlockNumber, expected)
+			unexpectedDepositContractLogsCount.Inc()
+			return errors.Wrapf(errUnexpectedDepositContract,
+				"got %#x at block %d, wanted %#x%s",
+				depositLog.Address, depositLog.BlockNumber, expected,
+				s.depositSwitchHint(depositLog.BlockNumber))
 		}
 		if err := s.ProcessDepositLog(ctx, depositLog); err != nil {
 			return errors.Wrap(err, "Could not process deposit log")
@@ -144,7 +147,8 @@ func (s *Service) ProcessDepositLog(ctx context.Context, depositLog *gethtypes.L
 
 	if index != s.lastReceivedMerkleIndex+1 {
 		missedDepositLogsCount.Inc()
-		return errors.Errorf("received incorrect merkle index: wanted %d but got %d", s.lastReceivedMerkleIndex+1, index)
+		return errors.Errorf("received incorrect merkle index: wanted %d but got %d%s",
+			s.lastReceivedMerkleIndex+1, index, s.depositSwitchHint(depositLog.BlockNumber))
 	}
 	s.lastReceivedMerkleIndex = index
 
@@ -422,6 +426,18 @@ func (s *Service) processBlockInBatch(ctx context.Context, currentBlockNum uint6
 	// end untouched matters: the caller records it as the last scanned block and later resumes above
 	// it, so a batch must never report a block it did not query, and must always move forward.
 	queries := s.depositLogQueries(start, end)
+	if len(queries) > 1 {
+		// A batch only splits where it spans the switch, which happens once per historical scan.
+		// Recording it gives operators the one moment the contracts change hands, so a failure just
+		// after it can be tied to the switch rather than hunted for in the execution client.
+		log.WithFields(logrus.Fields{
+			"switchBlock":      s.cfg.depositContractSwitchBlock,
+			"retiredContract":  s.cfg.retiredDepositContractAddr.Hex(),
+			"currentContract":  s.cfg.depositContractAddr.Hex(),
+			"lastDepositIndex": s.lastReceivedMerkleIndex,
+			"blockRange":       fmt.Sprintf("%d-%d", start, end),
+		}).Info("Deposit log scan crossing the deposit contract switch block")
+	}
 	var logs []gethtypes.Log
 	for _, query := range queries {
 		part, err := s.httpLogger.FilterLogs(ctx, query)

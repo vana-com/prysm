@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum"
@@ -86,6 +87,31 @@ func (s *Service) applyDepositContractSwitchMigration(ctx context.Context) error
 			"reached past it before the switch was configured and so never read the current contract there")
 	}
 	return s.cfg.beaconDB.SaveAppliedDepositContractSwitch(ctx, switchBlock)
+}
+
+// errUnexpectedDepositContract marks a deposit log rejected for coming from a contract that is not
+// authoritative for its block. It is a sentinel rather than an ad-hoc error so that the retry loop in
+// initPOWService can tell this apart from the execution-client failures it shares a path with, and
+// report it as the configuration problem it is instead of blaming the execution client.
+var errUnexpectedDepositContract = errors.New(
+	"deposit log from a contract that is not authoritative for its block")
+
+// depositSwitchHint describes the configured switch when blkNum sits at or above it, for appending
+// to errors a misconfigured switch is a plausible cause of. It is empty when no switch is configured
+// or the block predates it.
+//
+// Without it these failures reach the operator as the generic retry message from initPOWService,
+// which blames the execution client, and a node that stopped following deposits because of its own
+// switch configuration looks indistinguishable from one whose execution client is behind.
+func (s *Service) depositSwitchHint(blkNum uint64) string {
+	if s.cfg.depositContractSwitchBlock == 0 || blkNum < s.cfg.depositContractSwitchBlock {
+		return ""
+	}
+	return fmt.Sprintf(
+		". Block %d is at or above the configured deposit contract switch block %d, where deposits "+
+			"move from %s to %s, so check that configuration before the execution client",
+		blkNum, s.cfg.depositContractSwitchBlock,
+		s.cfg.retiredDepositContractAddr.Hex(), s.cfg.depositContractAddr.Hex())
 }
 
 // depositLogQueries returns the filter queries needed to read every deposit log in [start, end],
