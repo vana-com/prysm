@@ -55,6 +55,22 @@ func (s *Service) applyDepositContractSwitchMigration(ctx context.Context) error
 		return nil
 	}
 
+	// Rewinding can only append: the rescan reads the current contract from the switch block on, and
+	// deposits already known are skipped by index. That holds only while every stored deposit sits
+	// below the switch. One at or above it can only have come from the retired contract still
+	// emitting after the switch, and no rewind repairs that -- the rescan would find the current
+	// contract's deposit at the same index and drop it as already seen, leaving the wrong leaf in the
+	// tree for good. Refuse to start rather than diverge quietly.
+	for _, ctr := range s.cfg.depositCache.AllDepositContainers(ctx) {
+		if ctr.Eth1BlockHeight >= switchBlock {
+			return errors.Errorf(
+				"deposit %d was recorded at block %d, at or above the deposit contract switch block %d, "+
+					"so it came from the retired contract after the switch and the deposit tree cannot be "+
+					"corrected by rescanning; resync this node's deposit history",
+				ctr.Index, ctr.Eth1BlockHeight, switchBlock)
+		}
+	}
+
 	s.latestEth1DataLock.Lock()
 	cursor := s.latestEth1Data.LastRequestedBlock
 	if cursor > switchBlock {

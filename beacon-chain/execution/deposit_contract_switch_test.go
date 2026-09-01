@@ -2,9 +2,11 @@ package execution
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"testing"
 
+	"github.com/OffchainLabs/prysm/v7/beacon-chain/cache/depositsnapshot"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/db"
 	dbtest "github.com/OffchainLabs/prysm/v7/beacon-chain/db/testing"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/execution/types"
@@ -40,12 +42,17 @@ func (*capturingLogger) SubscribeFilterLogs(_ context.Context, _ ethereum.Filter
 // switchService builds the smallest service able to run the log scanning paths. Chainstart is marked
 // done so that header lookups are skipped and only the filter query behaviour is under test.
 func switchService(logger *capturingLogger, switchBlock uint64) *Service {
+	depositCache, err := depositsnapshot.New()
+	if err != nil {
+		panic(err)
+	}
 	return &Service{
 		cfg: &config{
 			depositContractAddr:        currentContract,
 			retiredDepositContractAddr: retiredContract,
 			depositContractSwitchBlock: switchBlock,
 			eth1HeaderReqLimit:         1000,
+			depositCache:               depositCache,
 		},
 		chainStartData:          &ethpb.ChainStartData{Chainstarted: true},
 		latestEth1Data:          &ethpb.LatestETH1Data{},
@@ -316,6 +323,18 @@ func TestProcessLog_RejectsDepositFromUnexpectedContract(t *testing.T) {
 // advances whether or not a block held a deposit, so such a cursor can already sit above the switch
 // block while the current contract was never read below it. Resuming there drops those deposits
 // silently, and the next one then fails the sequential index check for good.
+// depositContainer builds the minimum a deposit cache will accept: it indexes containers by public
+// key, so Deposit.Data must be populated even when the test only cares about the block height.
+func depositContainer(index int64, blockHeight uint64) *ethpb.DepositContainer {
+	pubkey := make([]byte, 48)
+	pubkey[0] = byte(index + 1)
+	return &ethpb.DepositContainer{
+		Index:           index,
+		Eth1BlockHeight: blockHeight,
+		Deposit:         &ethpb.Deposit{Data: &ethpb.Deposit_Data{PublicKey: pubkey}},
+	}
+}
+
 func TestApplyDepositContractSwitchMigration(t *testing.T) {
 	const switchBlock = 100
 
@@ -367,6 +386,34 @@ func TestApplyDepositContractSwitchMigration(t *testing.T) {
 		s, _ := newService(t, switchBlock, 40)
 		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
 		assert.Equal(t, uint64(40), s.latestEth1Data.LastRequestedBlock)
+	})
+
+	// A deposit recorded at or above the switch can only have come from the retired contract still
+	// emitting after the switch. Rewinding cannot repair that: the rescan would find the current
+	// contract's deposit at the same index and drop it as already seen, leaving the wrong leaf in the
+	// tree permanently. Refusing to start is the only outcome that is not silent divergence.
+	for _, height := range []uint64{switchBlock, switchBlock + 1} {
+		t.Run(fmt.Sprintf("refuses to start with a stored deposit at block %d", height), func(t *testing.T) {
+			s, _ := newService(t, switchBlock, 5000)
+			s.cfg.depositCache.InsertDepositContainers(t.Context(), []*ethpb.DepositContainer{
+				depositContainer(0, 40),
+				depositContainer(1, height),
+			})
+			err := s.applyDepositContractSwitchMigration(t.Context())
+			require.NotNil(t, err, "a deposit at block %d must not be silently rescanned over", height)
+			assert.StringContains(t, "resync this node's deposit history", err.Error())
+			assert.Equal(t, uint64(5000), s.latestEth1Data.LastRequestedBlock, "rewound despite refusing")
+		})
+	}
+
+	t.Run("accepts deposits that all sit below the switch", func(t *testing.T) {
+		s, _ := newService(t, switchBlock, 5000)
+		s.cfg.depositCache.InsertDepositContainers(t.Context(), []*ethpb.DepositContainer{
+			depositContainer(0, 10),
+			depositContainer(1, switchBlock-1),
+		})
+		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
+		assert.Equal(t, uint64(switchBlock), s.latestEth1Data.LastRequestedBlock)
 	})
 
 	t.Run("does nothing when no switch is configured", func(t *testing.T) {
