@@ -271,6 +271,37 @@ func TestProcessBlockInBatch_BookmarkIsAlwaysScanned(t *testing.T) {
 	})
 }
 
+// TestProcessBlockInBatch_UnknownDepositCount covers the deposit count being unreadable, which
+// happens legitimately when a switch is configured before the current contract is deployed. The
+// count reaches only a batch-widening branch and nothing that decides which blocks are queried, so
+// the scan must behave identically with or without it.
+func TestProcessBlockInBatch_UnknownDepositCount(t *testing.T) {
+	const (
+		switchBlock  = 100
+		followHeight = 200
+	)
+
+	run := func(t *testing.T, count uint64) (*capturingLogger, uint64) {
+		logger := &capturingLogger{}
+		s := switchService(logger, switchBlock)
+		next, _, err := s.processBlockInBatch(
+			t.Context(), 90, followHeight, 50, 10, count, map[uint64]*types.HeaderInfo{})
+		require.NoError(t, err)
+		return logger, next
+	}
+
+	known, knownNext := run(t, 1000)
+	unknown, unknownNext := run(t, unknownDepositCount)
+
+	require.Equal(t, true, unknownNext > 90, "the scan must advance without a deposit count")
+	assert.Equal(t, knownNext, unknownNext, "an unreadable count changed how far the batch reached")
+	require.Equal(t, len(known.queries), len(unknown.queries))
+	for i := range known.queries {
+		assert.Equal(t, known.queries[i].FromBlock.Uint64(), unknown.queries[i].FromBlock.Uint64())
+		assert.Equal(t, known.queries[i].ToBlock.Uint64(), unknown.queries[i].ToBlock.Uint64())
+	}
+}
+
 // TestProcessBlockInBatch_NoSwitchIsUnchanged pins the behaviour of a chain that never switched
 // deposit contracts, so the switch support cannot regress existing deployments.
 func TestProcessBlockInBatch_NoSwitchIsUnchanged(t *testing.T) {

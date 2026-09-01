@@ -37,6 +37,14 @@ const eth1DataSavingInterval = 1000
 const maxTolerableDifference = 50
 const defaultEth1HeaderReqLimit = uint64(1000)
 const depositLogRequestLimit = 10000
+
+// unknownDepositCount stands in for a deposit count that could not be read from the contract.
+//
+// Its one consumer subtracts the locally known count from it and widens a batch when the remainder
+// is small. That branch is currently inert, since end is already clamped to the follow height before
+// it runs, but the maximum is still the right stand-in: should the branch ever become effective, it
+// keeps the widening off rather than firing on a figure that was never read.
+const unknownDepositCount = ^uint64(0)
 const additiveFactorMultiplier = 0.10
 const multiplicativeDecreaseDivisor = 2
 const depositLoggingInterval = 1024
@@ -307,11 +315,23 @@ func (s *Service) processPastLogs(ctx context.Context) error {
 	currentBlockNum = max(currentBlockNum, deploymentBlock)
 	// To store all blocks.
 	headersMap := make(map[uint64]*types.HeaderInfo)
-	rawLogCount, err := s.depositContractCaller.GetDepositCount(&bind.CallOpts{})
-	if err != nil {
-		return err
+	// Read from the current contract even for ranges below a switch. The count is a total, not a
+	// per-range figure: a switched chain's current contract continues the retired one's numbering, so
+	// only it knows the global count, and the retired one's is frozen at the switch.
+	//
+	// Failing to read it must not stop the scan. It reaches only the batch-widening branch below,
+	// which decides nothing about which blocks are queried, and it legitimately fails whenever the
+	// current contract is not yet deployed -- exactly the case when a switch is configured ahead of
+	// the deployment. Treating it as fatal turned that into an indefinite retry behind a message
+	// blaming the execution client.
+	logCount := unknownDepositCount
+	if rawLogCount, err := s.depositContractCaller.GetDepositCount(&bind.CallOpts{}); err != nil {
+		log.WithError(err).WithField("contract", s.cfg.depositContractAddr.Hex()).Warn(
+			"Could not read the deposit count from the deposit contract. Deposit scanning is " +
+				"unaffected; this is expected while the contract is not yet deployed")
+	} else {
+		logCount = binary.LittleEndian.Uint64(rawLogCount)
 	}
-	logCount := binary.LittleEndian.Uint64(rawLogCount)
 
 	latestFollowHeight, err := s.followedBlockHeight(ctx)
 	if err != nil {
