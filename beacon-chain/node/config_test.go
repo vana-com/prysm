@@ -228,6 +228,22 @@ func TestValidateDepositContractSwitch(t *testing.T) {
 			wantErr:     "same as the current deposit contract",
 		},
 		{
+			// IsHexAddress accepts this, and a log query against an address with no code returns an
+			// empty result rather than an error, so it would read as an empty deposit history.
+			name:        "retired is the zero address",
+			retired:     "0x0000000000000000000000000000000000000000",
+			switchBlock: 500,
+			deployment:  100,
+			wantErr:     "retired deposit contract address is the zero address",
+		},
+		{
+			name:        "retired is the unprefixed zero address",
+			retired:     "0000000000000000000000000000000000000000",
+			switchBlock: 500,
+			deployment:  100,
+			wantErr:     "retired deposit contract address is the zero address",
+		},
+		{
 			name:        "switch block at the deployment block",
 			retired:     retired,
 			switchBlock: 100,
@@ -242,6 +258,17 @@ func TestValidateDepositContractSwitch(t *testing.T) {
 			wantErr:     "must be above the contract deployment block",
 		},
 	}
+
+	t.Run("current is the zero address", func(t *testing.T) {
+		params.SetupTestConfigCleanup(t)
+		c := params.BeaconConfig().Copy()
+		c.DepositContractAddress = "0x0000000000000000000000000000000000000000"
+		c.RetiredDepositContractAddress = retired
+		c.DepositContractSwitchBlock = 500
+		err := validateDepositContractSwitch(c)
+		require.NotNil(t, err)
+		assert.StringContains(t, "deposit contract address is the zero address", err.Error())
+	})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

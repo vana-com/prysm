@@ -167,6 +167,18 @@ func validateDepositContractSwitch(c *params.BeaconChainConfig) error {
 	if !common.IsHexAddress(retired) {
 		return fmt.Errorf("invalid retired deposit contract address given: %s", retired)
 	}
+	// The zero address passes IsHexAddress, and an eth_getLogs query against an address with no code
+	// answers with an empty result rather than an error. A placeholder or mistyped address would
+	// therefore produce an empty deposit history below the switch with nothing to diagnose from, so
+	// reject it here where it is still visible.
+	if (common.HexToAddress(retired) == common.Address{}) {
+		return fmt.Errorf("retired deposit contract address is the zero address, which would read as " +
+			"an empty deposit history below the switch block")
+	}
+	if (common.HexToAddress(c.DepositContractAddress) == common.Address{}) {
+		return fmt.Errorf("deposit contract address is the zero address, which would read as an empty " +
+			"deposit history at and above the switch block")
+	}
 	if common.HexToAddress(retired) == common.HexToAddress(c.DepositContractAddress) {
 		return fmt.Errorf("retired deposit contract %s is the same as the current deposit contract", retired)
 	}
