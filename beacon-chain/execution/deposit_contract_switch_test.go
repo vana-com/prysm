@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/cache/depositsnapshot"
+	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/transition"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/db"
 	dbtest "github.com/OffchainLabs/prysm/v7/beacon-chain/db/testing"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/execution/types"
@@ -47,6 +48,10 @@ func switchService(logger *capturingLogger, switchBlock uint64) *Service {
 	if err != nil {
 		panic(err)
 	}
+	genState, err := transition.EmptyGenesisState()
+	if err != nil {
+		panic(err)
+	}
 	return &Service{
 		cfg: &config{
 			depositContractAddr:        currentContract,
@@ -55,6 +60,7 @@ func switchService(logger *capturingLogger, switchBlock uint64) *Service {
 			eth1HeaderReqLimit:         1000,
 			depositCache:               depositCache,
 		},
+		preGenesisState:         genState,
 		chainStartData:          &ethpb.ChainStartData{Chainstarted: true},
 		latestEth1Data:          &ethpb.LatestETH1Data{},
 		lastReceivedMerkleIndex: -1,
@@ -445,6 +451,37 @@ func TestApplyDepositContractSwitchMigration(t *testing.T) {
 		assert.Equal(t, uint64(switchBlock), applied)
 	})
 
+	// The marker is what stops the migration running again, so the rewound cursor has to reach disk
+	// before it. Leaving it in memory means a restart restores the stale cursor while the marker
+	// suppresses the rewind, and the skipped deposits are lost with the one-shot protection spent.
+	t.Run("persists the rewound cursor, not just the marker", func(t *testing.T) {
+		s, beaconDB := newService(t, switchBlock, 5000)
+		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
+
+		// This is what a restart restores, so it is what actually has to be correct.
+		stored, err := beaconDB.ExecutionChainData(t.Context())
+		require.NoError(t, err)
+		require.NotNil(t, stored)
+		assert.Equal(t, uint64(switchBlock), stored.CurrentEth1Data.LastRequestedBlock,
+			"the rewind never reached disk, so a restart would resume from the stale cursor")
+	})
+
+	t.Run("a restart after the migration resumes from the switch", func(t *testing.T) {
+		s, beaconDB := newService(t, switchBlock, 5000)
+		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
+
+		// Restart: the cursor comes back from disk and the marker suppresses a second rewind, so the
+		// persisted value is the only thing standing between the node and the skipped range.
+		stored, err := beaconDB.ExecutionChainData(t.Context())
+		require.NoError(t, err)
+		restarted := switchService(&capturingLogger{}, switchBlock)
+		restarted.cfg.beaconDB = beaconDB
+		restarted.latestEth1Data = stored.CurrentEth1Data
+		require.NoError(t, restarted.applyDepositContractSwitchMigration(t.Context()))
+		assert.Equal(t, uint64(switchBlock), restarted.latestEth1Data.LastRequestedBlock,
+			"the restarted node resumed above the switch with the migration already marked applied")
+	})
+
 	t.Run("runs once, so a later start does not rescan", func(t *testing.T) {
 		s, beaconDB := newService(t, switchBlock, 5000)
 		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
@@ -458,9 +495,37 @@ func TestApplyDepositContractSwitchMigration(t *testing.T) {
 		assert.Equal(t, uint64(9000), s2.latestEth1Data.LastRequestedBlock, "rewound a second time")
 	})
 
-	t.Run("a different switch block migrates again", func(t *testing.T) {
+	// Rewinding cannot reconcile one boundary with another. Blocks between the two keep the contract
+	// attribution they were read under, and for a raised switch those deposits sit below the new
+	// value, so the height check above passes them unnoticed. A second switch is not representable in
+	// the configuration either, so a mismatch is always a misconfiguration or a correction of one.
+	for _, tt := range []struct {
+		name         string
+		reconfigured uint64
+	}{
+		{"raised", 3000},
+		{"lowered", 50},
+	} {
+		t.Run("refuses a switch block reconfigured "+tt.name, func(t *testing.T) {
+			s, beaconDB := newService(t, switchBlock, 5000)
+			require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
+
+			s2 := switchService(&capturingLogger{}, tt.reconfigured)
+			s2.cfg.beaconDB = beaconDB
+			s2.latestEth1Data = &ethpb.LatestETH1Data{LastRequestedBlock: 9000}
+			err := s2.applyDepositContractSwitchMigration(t.Context())
+			require.NotNil(t, err, "silently remigrated to a different switch block")
+			assert.StringContains(t, "already migrated for switch block 100", err.Error())
+			assert.StringContains(t, "clear-deposit-contract", err.Error())
+			assert.Equal(t, uint64(9000), s2.latestEth1Data.LastRequestedBlock, "rewound despite refusing")
+		})
+	}
+
+	// Without an escape hatch a mistyped switch block would brick the data directory permanently.
+	t.Run("clearing the recorded switch lets a new one be applied", func(t *testing.T) {
 		s, beaconDB := newService(t, switchBlock, 5000)
 		require.NoError(t, s.applyDepositContractSwitchMigration(t.Context()))
+		require.NoError(t, beaconDB.ClearAppliedDepositContractSwitch(t.Context()))
 
 		s2 := switchService(&capturingLogger{}, 3000)
 		s2.cfg.beaconDB = beaconDB

@@ -112,6 +112,7 @@ type NoHeadAccessDatabase interface {
 	// Deposit contract related handlers.
 	SaveDepositContractAddress(ctx context.Context, addr common.Address) error
 	ClearDepositContractAddress(ctx context.Context) error
+	ClearAppliedDepositContractSwitch(ctx context.Context) error
 	SaveAppliedDepositContractSwitch(ctx context.Context, block uint64) error
 	// SaveExecutionChainData operations.
 	SaveExecutionChainData(ctx context.Context, data *ethpb.ETH1ChainData) error

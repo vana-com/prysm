@@ -66,9 +66,28 @@ func TestStore_AppliedDepositContractSwitch(t *testing.T) {
 	assert.Equal(t, true, found)
 	assert.Equal(t, uint64(2804), block)
 
-	// Reconfiguring to a different switch overwrites, so the migration runs again for it.
+	// The store overwrites rather than refusing; declining a changed switch block is the migration's
+	// job, since only it knows a rewind cannot reconcile one boundary with another.
 	require.NoError(t, db.SaveAppliedDepositContractSwitch(ctx, 5000))
 	block, _, err = db.AppliedDepositContractSwitch(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(5000), block)
+}
+
+func TestStore_ClearAppliedDepositContractSwitch(t *testing.T) {
+	db := setupDB(t)
+	ctx := t.Context()
+
+	// Clearing when nothing is recorded is a no-op, so the flag can be left set across restarts.
+	require.NoError(t, db.ClearAppliedDepositContractSwitch(ctx))
+
+	require.NoError(t, db.SaveAppliedDepositContractSwitch(ctx, 2804))
+	_, found, err := db.AppliedDepositContractSwitch(ctx)
+	require.NoError(t, err)
+	require.Equal(t, true, found)
+
+	require.NoError(t, db.ClearAppliedDepositContractSwitch(ctx))
+	_, found, err = db.AppliedDepositContractSwitch(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, false, found, "the recorded switch survived clearing, so the refusal cannot be lifted")
 }

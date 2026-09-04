@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/OffchainLabs/prysm/v7/cmd"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pkg/errors"
@@ -41,7 +42,8 @@ func (s *Service) depositContractForBlock(blkNum uint64) (common.Address, uint64
 //
 // Rewinding is safe to repeat -- already-known deposits are skipped by index -- but rescanning from
 // the switch on every start would grow without bound, so the applied switch is recorded and the
-// rewind happens once. Reconfiguring a different switch block records anew and migrates again.
+// rewind happens once. A database already migrated for a different switch block is refused rather
+// than migrated again, since rewinding cannot reconcile one boundary with another.
 func (s *Service) applyDepositContractSwitchMigration(ctx context.Context) error {
 	switchBlock := s.cfg.depositContractSwitchBlock
 	if switchBlock == 0 {
@@ -54,6 +56,21 @@ func (s *Service) applyDepositContractSwitchMigration(ctx context.Context) error
 	}
 	if found && applied == switchBlock {
 		return nil
+	}
+	// A database scanned under one switch block cannot be reconciled with another by rewinding.
+	// Blocks between the two keep the contract attribution they were read under, and rewinding to a
+	// raised switch never revisits them: the deposits the retired contract emitted there are never
+	// read, while the current contract's deposits already recorded there sit below the new switch
+	// and so pass the height check above unnoticed. The configuration expresses a single retired
+	// address and a single switch block, so a second switch is not representable and any mismatch is
+	// either a misconfiguration or a correction of one. Both want a person, not a silent remigration.
+	if found {
+		return errors.Errorf(
+			"deposit log scan was already migrated for switch block %d but %d is configured; a database "+
+				"scanned under one switch block cannot be corrected by rewinding to another. Restore the "+
+				"previous value, or resync this node's deposit history and start once with --%s to clear "+
+				"the recorded switch",
+			applied, switchBlock, cmd.ClearDepositContract.Name)
 	}
 
 	// Rewinding can only append: the rescan reads the current contract from the switch block on, and
@@ -74,17 +91,31 @@ func (s *Service) applyDepositContractSwitchMigration(ctx context.Context) error
 
 	s.latestEth1DataLock.Lock()
 	cursor := s.latestEth1Data.LastRequestedBlock
-	if cursor > switchBlock {
+	rewound := cursor > switchBlock
+	if rewound {
 		s.latestEth1Data.LastRequestedBlock = switchBlock
 	}
 	s.latestEth1DataLock.Unlock()
 
-	if cursor > switchBlock {
+	if rewound {
 		log.WithFields(logrus.Fields{
 			"previousBlock": cursor,
 			"switchBlock":   switchBlock,
 		}).Warn("Rewinding deposit log scan to the deposit contract switch block, as the scan " +
 			"reached past it before the switch was configured and so never read the current contract there")
+
+		// Persist the rewound cursor before recording the switch as applied, because the marker is
+		// what stops this from running again. Nothing else writes the cursor on a useful schedule --
+		// processPastLogs only sets it in memory, and savePowchainData is otherwise reached at every
+		// thousandth deposit index or at chain start -- so leaving it unsaved means a restart
+		// restores the stale cursor while the marker suppresses the rewind that would fix it, and
+		// the skipped deposits are lost for good.
+		//
+		// This order is the safe one: a crash between the two leaves the marker absent, so the
+		// migration simply runs again. The reverse order is the bug.
+		if err := s.savePowchainData(ctx); err != nil {
+			return errors.Wrap(err, "could not persist the rewound deposit log scan cursor")
+		}
 	}
 	return s.cfg.beaconDB.SaveAppliedDepositContractSwitch(ctx, switchBlock)
 }

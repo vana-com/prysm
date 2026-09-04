@@ -71,6 +71,21 @@ func (s *Store) SaveAppliedDepositContractSwitch(ctx context.Context, block uint
 	})
 }
 
+// ClearAppliedDepositContractSwitch forgets which deposit contract switch this database has been
+// migrated for, so that a switch may be applied again. It is the escape hatch for a switch block
+// recorded in error: the migration refuses to start on a mismatch, and nothing else clears it.
+//
+// Clearing lets the migration run again, but it cannot undo deposits already scanned under the old
+// boundary, so it is a step in a resync rather than a repair on its own.
+func (s *Store) ClearAppliedDepositContractSwitch(ctx context.Context) error {
+	_, span := trace.StartSpan(ctx, "BeaconDB.ClearAppliedDepositContractSwitch")
+	defer span.End()
+
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(chainMetadataBucket).Delete(depositContractSwitchKey)
+	})
+}
+
 // ClearDepositContractAddress removes the stored deposit contract address, leaving every other
 // bucket untouched. SaveDepositContractAddress is write-once, so clearing the key is how an
 // operator intentionally migrating to a new deposit contract lets the node re-record the address

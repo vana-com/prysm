@@ -541,7 +541,15 @@ func (b *BeaconNode) Close() {
 // clearDepositContractAddress removes only the deposit contract address recorded in the database,
 // so that checkAndSaveDepositContract records the configured address again on this same start. All
 // other data is left untouched, which is what distinguishes this from clearing the whole database.
-func (b *BeaconNode) clearDepositContractAddress() error {
+func (b *BeaconNode) clearDepositContractState() error {
+	// Cleared unconditionally, and before the address: the address may already be absent, and this
+	// is the only way to lift the migration's refusal to start on a switch block that was recorded
+	// in error. It lets the migration run again but cannot undo deposits already scanned under the
+	// old boundary, so it is a step in a resync rather than a repair on its own.
+	if err := b.db.ClearAppliedDepositContractSwitch(b.ctx); err != nil {
+		return errors.Wrap(err, "could not clear the applied deposit contract switch")
+	}
+
 	knownContract, err := b.db.DepositContractAddress(b.ctx)
 	if err != nil {
 		return errors.Wrap(err, "could not get deposit contract address")
@@ -628,7 +636,7 @@ func (b *BeaconNode) startDB(cliCtx *cli.Context, depositAddress string) error {
 	}
 
 	if cliCtx.Bool(cmd.ClearDepositContract.Name) {
-		if err := b.clearDepositContractAddress(); err != nil {
+		if err := b.clearDepositContractState(); err != nil {
 			return err
 		}
 	}
