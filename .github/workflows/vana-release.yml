@@ -93,8 +93,16 @@ jobs:
         working-directory: out
         run: |
           set -euo pipefail
-          # shasum is present on all three runner images; sha256sum is not on macOS.
-          for f in *; do shasum -a 256 "$f" > "$f.sha256"; done
+          # No single checksum tool is on all three runners: macOS has shasum but not sha256sum,
+          # and Windows git-bash has sha256sum but not shasum. Pick whichever is present.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256() { sha256sum "$1"; }
+          else
+            sha256() { shasum -a 256 "$1"; }
+          fi
+          # Expand the list before writing into the directory, so the .sha256 files are not hashed.
+          files=(*)
+          for f in "${files[@]}"; do sha256 "$f" > "$f.sha256"; done
           cat *.sha256
 
       - uses: actions/upload-artifact@v4
