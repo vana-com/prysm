@@ -200,12 +200,17 @@ var (
 		Name:  "clear-db",
 		Usage: "Prompt for clearing any previously stored data at the data directory.",
 	}
-	// ClearDepositContract removes only the stored deposit contract address, leaving all other data intact.
+	// ClearDepositContract removes the deposit contract state that pins a database to one contract
+	// configuration: the recorded address and the switch it has been migrated for. Everything else
+	// is left intact.
 	ClearDepositContract = &cli.BoolFlag{
 		Name: "clear-deposit-contract",
-		Usage: "Clears only the deposit contract address recorded in the database, leaving all other data " +
-			"intact. The address is re-recorded from the current configuration on this same start. Use when " +
-			"intentionally migrating to a new deposit contract, instead of wiping the whole database.",
+		Usage: "Clears the deposit contract address recorded in the database, and the deposit contract " +
+			"switch the database has been migrated for, leaving all other data intact. The address is " +
+			"re-recorded from the current configuration on this same start. Use it for one start when " +
+			"migrating to a new deposit contract, instead of wiping the whole database, then remove it: " +
+			"left set it clears the recorded switch on every start, disabling the check that refuses a " +
+			"switch block changed from the one the database was migrated for.",
 	}
 	// LogFormat specifies the log output format.
 	LogFormat = &cli.StringFlag{

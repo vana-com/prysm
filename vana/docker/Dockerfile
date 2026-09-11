@@ -12,7 +12,7 @@
 # it matches the builder's glibc.
 ARG GO_VERSION=1.26
 
-FROM --platform=$TARGETPLATFORM golang:${GO_VERSION} AS build
+FROM golang:${GO_VERSION} AS build
 
 # Version metadata, mirroring the x_defs in runtime/version/BUILD.bazel. Without these the binary
 # reports "Unknown" and "Moments ago", leaving a deployed image impossible to identify. The import
@@ -24,7 +24,10 @@ ARG COMMIT=unknown
 WORKDIR /src
 
 # Copy the module graph first so dependency download caches separately from source edits.
+# third_party comes too: go.mod replaces github.com/tyler-smith/go-bip39 with a local directory,
+# and go mod download reads that directory's go.mod.
 COPY go.mod go.sum ./
+COPY third_party/ third_party/
 RUN go mod download
 
 COPY . .
