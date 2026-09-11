@@ -1,0 +1,169 @@
+# Release workflow for Vana's Prysm fork.
+#
+# Produces the same shape of release as upstream: a binary per target for each of the four commands,
+# SHA256 sums, and a container image. Upstream builds these with Bazel; this uses the Go toolchain
+# directly so the workflow needs no Bazel setup, at the cost of Bazel's PGO and stamping, which are
+# reproduced here through ldflags.
+#
+# blst is CGO, so every target needs a C toolchain for its architecture. linux/arm64 is cross
+# compiled with gcc-aarch64-linux-gnu, which is verified to build blst; the darwin and windows
+# targets build on native runners, since cross compiling CGO to those needs osxcross or mingw.
+# Note that macOS runners bill at 10x and Windows at 2x on private repositories.
+name: Vana release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release"
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  # Keep in step with the go directive in go.mod.
+  GO_VERSION: "1.26"
+
+jobs:
+  binaries:
+    name: ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, goos: linux, goarch: amd64 }
+          - { os: ubuntu-latest, goos: linux, goarch: arm64, cc: aarch64-linux-gnu-gcc, apt: gcc-aarch64-linux-gnu }
+          - { os: macos-13, goos: darwin, goarch: amd64 }
+          - { os: macos-latest, goos: darwin, goarch: arm64 }
+          - { os: windows-latest, goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # Version stamping reads the tag, which a shallow clone does not carry.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install cross toolchain
+        if: matrix.apt != ''
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ${{ matrix.apt }}
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          COMMIT="$(git rev-parse HEAD)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          DATE_UNIX="$(date -u +%s)"
+          V=github.com/OffchainLabs/prysm/v7/runtime/version
+          # Mirrors the x_defs in runtime/version/BUILD.bazel, so `beacon-chain --version`
+          # identifies the release rather than reporting "Unknown".
+          LDFLAGS="-s -w -X ${V}.gitTag=${TAG} -X ${V}.gitCommit=${COMMIT} -X ${V}.buildDate=${DATE} -X ${V}.buildDateUnix=${DATE_UNIX}"
+
+          mkdir -p out
+          SUFFIX=""
+          [ "${{ matrix.goos }}" = "windows" ] && SUFFIX=".exe"
+
+          for cmd in beacon-chain validator client-stats prysmctl; do
+            echo "building ${cmd} for ${{ matrix.goos }}/${{ matrix.goarch }}"
+            CGO_ENABLED=1 \
+            GOOS=${{ matrix.goos }} \
+            GOARCH=${{ matrix.goarch }} \
+            ${{ matrix.cc && format('CC={0}', matrix.cc) || '' }} \
+              go build -trimpath -ldflags "${LDFLAGS}" \
+                -o "out/${cmd}-${TAG}-${{ matrix.goos }}-${{ matrix.goarch }}${SUFFIX}" \
+                "./cmd/${cmd}"
+          done
+
+      - name: Checksums
+        shell: bash
+        working-directory: out
+        run: |
+          set -euo pipefail
+          # shasum is present on all three runner images; sha256sum is not on macOS.
+          for f in *; do shasum -a 256 "$f" > "$f.sha256"; done
+          cat *.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: out/*
+          retention-days: 7
+
+  image:
+    name: container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      # QEMU lets the linux/arm64 layer build on an amd64 runner. It is slower than a native
+      # runner but needs no arm64 runner availability, which private repositories may not have.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: vana/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/vana-com/prysm-beacon-chain:${{ inputs.tag || github.ref_name }}
+          build-args: |
+            TAG=${{ inputs.tag || github.ref_name }}
+            COMMIT=${{ github.sha }}
+            GO_VERSION=${{ env.GO_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: publish release
+    needs: [binaries, image]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          gh release create "$TAG" dist/* \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --verify-tag \
+            --notes "Vana build of Prysm.
+
+          Container image: \`ghcr.io/vana-com/prysm-beacon-chain:$TAG\`
+
+          Binaries are built with the Go toolchain rather than Bazel, so they carry no
+          profile-guided optimisation. Version metadata is stamped to match, so
+          \`beacon-chain --version\` reports this tag.
+
+          See the commit log for what this build carries on top of its upstream base."
