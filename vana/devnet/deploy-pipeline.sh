@@ -62,7 +62,12 @@ GETH_IMG=ethereum/client-go:v1.16.8
 GEN_IMG=ethpandaops/ethereum-genesis-generator:6.1.5
 CL_V51=gcr.io/prysmaticlabs/prysm/beacon-chain:v5.1.0
 VC_V51=gcr.io/prysmaticlabs/prysm/validator:v5.1.0
-CL_PATCHED=prysm-beacon:local
+# The published release, so the pipeline exercises the artifact operators actually run rather than
+# whatever happens to be in the local docker daemon. Override to test uncommitted work:
+#   docker build -f vana/docker/Dockerfile --build-arg TAG="$(git describe --tags --always)" \
+#     --build-arg COMMIT="$(git rev-parse HEAD)" -t prysm-beacon:local .
+#   CL_PATCHED=prysm-beacon:local ./deploy-pipeline.sh
+CL_PATCHED="${CL_PATCHED:-ghcr.io/vana-com/prysm-beacon-chain:v7.1.8-vega.1}"
 VC_NEW=gcr.io/prysmaticlabs/prysm/validator:v7.1.8
 FOUNDRY=ghcr.io/foundry-rs/foundry:latest
 VALTOOLS=protolambda/eth2-val-tools:latest
@@ -227,6 +232,16 @@ need_running() {
   for c in "$@"; do
     docker ps --format '{{.Names}}' | grep -qx "$c" || die "this phase needs container '$c' running - rerun from an earlier phase"
   done
+}
+# The patched beacon image is remote by default, and the swap phases stop a stack before starting
+# it, so a pull that fails afterwards leaves the chain a node short for no visible reason. Fetch it
+# up front. Pulling here also keeps the swap's downtime to the container restart rather than a
+# download, which matters when the whole point is to keep the other stacks carrying the chain.
+need_image() {
+  docker image inspect "$1" >/dev/null 2>&1 && return 0
+  info "pulling $1"
+  docker pull "$1" >/dev/null 2>&1 \
+    || die "cannot pull $1 - if the package is private, run: docker login ghcr.io"
 }
 
 # ============================================================ phase 0: teardown
@@ -694,6 +709,7 @@ except Exception: print(9999)" 2>/dev/null)" -le 1 ]'
 p6_rolling() {
   c_hdr "PHASE 6  rolling client swap: v5.1.0 -> patched, one stack at a time"
   need_file pipeline/new_contract; need_file pipeline/switch_block
+  need_image "$CL_PATCHED"
   local k
   for k in $(seq 1 "$STACKS"); do need_running "$(sk_el "$k")" "$(sk_cl "$k")"; done
   local newc swb; newc=$(cat pipeline/new_contract); swb=$(cat pipeline/switch_block)
@@ -716,6 +732,7 @@ p6_rolling() {
 p6_swap_patched() {
   c_hdr "PHASE 6  live swap to patched Prysm + deposit-contract switch"
   need_running vana-el vana-cl; need_file pipeline/new_contract; need_file pipeline/switch_block
+  need_image "$CL_PATCHED"
   local new sw pre_slot pre_root
   new=$(cat pipeline/new_contract); sw=$(cat pipeline/switch_block)
   pre_slot=$(clslot)
