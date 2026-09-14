@@ -6,6 +6,7 @@ go_library(
         "block_cache.go",
         "block_reader.go",
         "deposit.go",
+        "deposit_contract_switch.go",
         "engine_client.go",
         "engine_jsonrpc.go",
         "errors.go",
@@ -91,6 +92,7 @@ go_test(
     srcs = [
         "block_cache_test.go",
         "block_reader_test.go",
+        "deposit_contract_switch_test.go",
         "deposit_test.go",
         "engine_client_fuzz_test.go",
         "engine_client_test.go",

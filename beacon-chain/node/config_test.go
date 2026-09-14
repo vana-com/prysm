@@ -191,3 +191,175 @@ func TestAliasFlag(t *testing.T) {
 	// Check if the alias set the flag correctly
 	assert.NoError(t, err)
 }
+
+func TestValidateDepositContractSwitch(t *testing.T) {
+	const current = "0x1111111111111111111111111111111111111111"
+	const retired = "0x2222222222222222222222222222222222222222"
+
+	tests := []struct {
+		name        string
+		retired     string
+		switchBlock uint64
+		deployment  uint64
+		wantErr     string
+	}{
+		{name: "unset is allowed"},
+		{name: "fully configured", retired: retired, switchBlock: 500, deployment: 100},
+		{
+			name:    "address without a switch block",
+			retired: retired,
+			wantErr: "needs both a retired contract and a switch block",
+		},
+		{
+			name:        "switch block without an address",
+			switchBlock: 500,
+			wantErr:     "needs both a retired contract and a switch block",
+		},
+		{
+			name:        "malformed address",
+			retired:     "not-an-address",
+			switchBlock: 500,
+			wantErr:     "invalid retired deposit contract address",
+		},
+		{
+			name:        "retired same as current",
+			retired:     current,
+			switchBlock: 500,
+			wantErr:     "same as the current deposit contract",
+		},
+		{
+			// IsHexAddress accepts this, and a log query against an address with no code returns an
+			// empty result rather than an error, so it would read as an empty deposit history.
+			name:        "retired is the zero address",
+			retired:     "0x0000000000000000000000000000000000000000",
+			switchBlock: 500,
+			deployment:  100,
+			wantErr:     "retired deposit contract address is the zero address",
+		},
+		{
+			name:        "retired is the unprefixed zero address",
+			retired:     "0000000000000000000000000000000000000000",
+			switchBlock: 500,
+			deployment:  100,
+			wantErr:     "retired deposit contract address is the zero address",
+		},
+		{
+			name:        "switch block at the deployment block",
+			retired:     retired,
+			switchBlock: 100,
+			deployment:  100,
+			wantErr:     "must be above the contract deployment block",
+		},
+		{
+			name:        "switch block below the deployment block",
+			retired:     retired,
+			switchBlock: 50,
+			deployment:  100,
+			wantErr:     "must be above the contract deployment block",
+		},
+	}
+
+	t.Run("current is the zero address", func(t *testing.T) {
+		params.SetupTestConfigCleanup(t)
+		c := params.BeaconConfig().Copy()
+		c.DepositContractAddress = "0x0000000000000000000000000000000000000000"
+		c.RetiredDepositContractAddress = retired
+		c.DepositContractSwitchBlock = 500
+		err := validateDepositContractSwitch(c)
+		require.NotNil(t, err)
+		assert.StringContains(t, "deposit contract address is the zero address", err.Error())
+	})
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params.SetupTestConfigCleanup(t)
+
+			netCfg := params.BeaconNetworkConfig().Copy()
+			netCfg.ContractDeploymentBlock = tt.deployment
+			params.OverrideBeaconNetworkConfig(netCfg)
+
+			c := params.BeaconConfig().Copy()
+			c.DepositContractAddress = current
+			c.RetiredDepositContractAddress = tt.retired
+			c.DepositContractSwitchBlock = tt.switchBlock
+
+			err := validateDepositContractSwitch(c)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.NotNil(t, err)
+			assert.StringContains(t, tt.wantErr, err.Error())
+		})
+	}
+}
+
+func TestConfigureEth1Config_DepositContractSwitchFlags(t *testing.T) {
+	params.SetupTestConfigCleanup(t)
+
+	netCfg := params.BeaconNetworkConfig().Copy()
+	netCfg.ContractDeploymentBlock = 100
+	params.OverrideBeaconNetworkConfig(netCfg)
+
+	const retired = "0x2222222222222222222222222222222222222222"
+
+	app := cli.App{}
+	set := flag.NewFlagSet("test", 0)
+	set.String(flags.DepositContractFlag.Name, "", "")
+	set.String(flags.RetiredDepositContract.Name, "", "")
+	set.Uint64(flags.DepositContractSwitchBlock.Name, 0, "")
+	require.NoError(t, set.Set(flags.DepositContractFlag.Name, "0x1111111111111111111111111111111111111111"))
+	require.NoError(t, set.Set(flags.RetiredDepositContract.Name, retired))
+	require.NoError(t, set.Set(flags.DepositContractSwitchBlock.Name, "500"))
+
+	require.NoError(t, configureEth1Config(cli.NewContext(&app, set, nil)))
+	assert.Equal(t, retired, params.BeaconConfig().RetiredDepositContractAddress)
+	assert.Equal(t, uint64(500), params.BeaconConfig().DepositContractSwitchBlock)
+}
+
+// TestConfigureBeacon_DepositContractSwitchUsesOverriddenDeploymentBlock exercises the real startup
+// order. The switch is validated against ContractDeploymentBlock, which configureNetwork overrides
+// from a flag, so validating before that override compares against a value the node never uses.
+// TestValidateDepositContractSwitch cannot catch this: it sets the network config directly.
+func TestConfigureBeacon_DepositContractSwitchUsesOverriddenDeploymentBlock(t *testing.T) {
+	const (
+		current = "0x1111111111111111111111111111111111111111"
+		retired = "0x2222222222222222222222222222222222222222"
+	)
+
+	newCtx := func(deploymentDefault uint64, deploymentFlag int, switchBlock uint64) *cli.Context {
+		netCfg := params.BeaconNetworkConfig().Copy()
+		netCfg.ContractDeploymentBlock = deploymentDefault
+		params.OverrideBeaconNetworkConfig(netCfg)
+
+		set := flag.NewFlagSet("test", 0)
+		set.String(flags.DepositContractFlag.Name, "", "")
+		set.String(flags.RetiredDepositContract.Name, "", "")
+		set.Uint64(flags.DepositContractSwitchBlock.Name, 0, "")
+		set.Int(flags.ContractDeploymentBlock.Name, 0, "")
+		require.NoError(t, set.Set(flags.DepositContractFlag.Name, current))
+		require.NoError(t, set.Set(flags.RetiredDepositContract.Name, retired))
+		require.NoError(t, set.Set(flags.DepositContractSwitchBlock.Name, strconv.FormatUint(switchBlock, 10)))
+		require.NoError(t, set.Set(flags.ContractDeploymentBlock.Name, strconv.Itoa(deploymentFlag)))
+		return cli.NewContext(&cli.App{}, set, nil)
+	}
+
+	t.Run("accepts a switch above the overridden deployment block", func(t *testing.T) {
+		params.SetupTestConfigCleanup(t)
+		// The flag lowers the deployment block to 10, so a switch at 500 is valid. Validating before
+		// the override would compare 500 against the 1,000,000 default and reject it.
+		require.NoError(t, configureBeacon(newCtx(1_000_000, 10, 500)))
+		assert.Equal(t, uint64(10), params.BeaconNetworkConfig().ContractDeploymentBlock)
+		assert.Equal(t, uint64(500), params.BeaconConfig().DepositContractSwitchBlock)
+	})
+
+	t.Run("rejects a switch at or below the overridden deployment block", func(t *testing.T) {
+		params.SetupTestConfigCleanup(t)
+		// The flag raises the deployment block to 900, above the switch at 500, so the retired
+		// contract would never be scanned. Validating before the override would compare 500 against
+		// the 0 default and let this through.
+		err := configureBeacon(newCtx(0, 900, 500))
+		require.NotNil(t, err, "a switch block below the effective deployment block must be rejected")
+		assert.StringContains(t, "must be above the contract deployment block", err.Error())
+	})
+}

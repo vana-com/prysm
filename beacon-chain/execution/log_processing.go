@@ -37,6 +37,14 @@ const eth1DataSavingInterval = 1000
 const maxTolerableDifference = 50
 const defaultEth1HeaderReqLimit = uint64(1000)
 const depositLogRequestLimit = 10000
+
+// unknownDepositCount stands in for a deposit count that could not be read from the contract.
+//
+// Its one consumer subtracts the locally known count from it and widens a batch when the remainder
+// is small. That branch is currently inert, since end is already clamped to the follow height before
+// it runs, but the maximum is still the right stand-in: should the branch ever become effective, it
+// keeps the widening off rather than firing on a figure that was never read.
+const unknownDepositCount = ^uint64(0)
 const additiveFactorMultiplier = 0.10
 const multiplicativeDecreaseDivisor = 2
 const depositLoggingInterval = 1024
@@ -60,9 +68,10 @@ func (s *Service) GenesisExecutionChainInfo() (uint64, *big.Int) {
 
 // ProcessETH1Block processes logs from the provided eth1 block.
 func (s *Service) ProcessETH1Block(ctx context.Context, blkNum *big.Int) error {
+	addr, _ := s.depositContractForBlock(blkNum.Uint64())
 	query := ethereum.FilterQuery{
 		Addresses: []common.Address{
-			s.cfg.depositContractAddr,
+			addr,
 		},
 		FromBlock: blkNum,
 		ToBlock:   blkNum,
@@ -95,6 +104,18 @@ func (s *Service) ProcessLog(ctx context.Context, depositLog *gethtypes.Log) err
 	defer s.processingLock.RUnlock()
 	// Process logs according to their event signature.
 	if depositLog.Topics[0] == depositEventSignature {
+		// Only the contract authoritative for this block may contribute deposits. The filter query
+		// already restricts by address, so this should be unreachable; it is enforced here so that a
+		// retired contract which starts emitting again can never be folded into the deposit trie.
+		// Failing is deliberate rather than skipping: an unexpected deposit log means the merkle
+		// index sequence can no longer be trusted, and continuing would corrupt the tree.
+		if expected, _ := s.depositContractForBlock(depositLog.BlockNumber); depositLog.Address != expected {
+			unexpectedDepositContractLogsCount.Inc()
+			return errors.Wrapf(errUnexpectedDepositContract,
+				"got %#x at block %d, wanted %#x%s",
+				depositLog.Address, depositLog.BlockNumber, expected,
+				s.depositSwitchHint(depositLog.BlockNumber))
+		}
 		if err := s.ProcessDepositLog(ctx, depositLog); err != nil {
 			return errors.Wrap(err, "Could not process deposit log")
 		}
@@ -126,7 +147,8 @@ func (s *Service) ProcessDepositLog(ctx context.Context, depositLog *gethtypes.L
 
 	if index != s.lastReceivedMerkleIndex+1 {
 		missedDepositLogsCount.Inc()
-		return errors.Errorf("received incorrect merkle index: wanted %d but got %d", s.lastReceivedMerkleIndex+1, index)
+		return errors.Errorf("received incorrect merkle index: wanted %d but got %d%s",
+			s.lastReceivedMerkleIndex+1, index, s.depositSwitchHint(depositLog.BlockNumber))
 	}
 	s.lastReceivedMerkleIndex = index
 
@@ -297,11 +319,23 @@ func (s *Service) processPastLogs(ctx context.Context) error {
 	currentBlockNum = max(currentBlockNum, deploymentBlock)
 	// To store all blocks.
 	headersMap := make(map[uint64]*types.HeaderInfo)
-	rawLogCount, err := s.depositContractCaller.GetDepositCount(&bind.CallOpts{})
-	if err != nil {
-		return err
+	// Read from the current contract even for ranges below a switch. The count is a total, not a
+	// per-range figure: a switched chain's current contract continues the retired one's numbering, so
+	// only it knows the global count, and the retired one's is frozen at the switch.
+	//
+	// Failing to read it must not stop the scan. It reaches only the batch-widening branch below,
+	// which decides nothing about which blocks are queried, and it legitimately fails whenever the
+	// current contract is not yet deployed -- exactly the case when a switch is configured ahead of
+	// the deployment. Treating it as fatal turned that into an indefinite retry behind a message
+	// blaming the execution client.
+	logCount := unknownDepositCount
+	if rawLogCount, err := s.depositContractCaller.GetDepositCount(&bind.CallOpts{}); err != nil {
+		log.WithError(err).WithField("contract", s.cfg.depositContractAddr.Hex()).Warn(
+			"Could not read the deposit count from the deposit contract. Deposit scanning is " +
+				"unaffected; this is expected while the contract is not yet deployed")
+	} else {
+		logCount = binary.LittleEndian.Uint64(rawLogCount)
 	}
-	logCount := binary.LittleEndian.Uint64(rawLogCount)
 
 	latestFollowHeight, err := s.followedBlockHeight(ctx)
 	if err != nil {
@@ -379,34 +413,48 @@ func (s *Service) processBlockInBatch(ctx context.Context, currentBlockNum uint6
 	// Appropriately bound the request, as we do not
 	// want request blocks beyond the current follow distance.
 	end = min(end, latestFollowHeight)
-	query := ethereum.FilterQuery{
-		Addresses: []common.Address{
-			s.cfg.depositContractAddr,
-		},
-		FromBlock: new(big.Int).SetUint64(start),
-		ToBlock:   new(big.Int).SetUint64(end),
-	}
 	remainingLogs := logCount - uint64(s.lastReceivedMerkleIndex+1)
 	// only change the end block if the remaining logs are below the required log limit.
-	// reset our query and end block in this case.
+	// reset our end block in this case.
 	withinLimit := remainingLogs < depositLogRequestLimit
 	aboveFollowHeight := end >= latestFollowHeight
 	if withinLimit && aboveFollowHeight {
-		query.ToBlock = new(big.Int).SetUint64(latestFollowHeight)
 		end = latestFollowHeight
 	}
-	logs, err := s.httpLogger.FilterLogs(ctx, query)
-	if err != nil {
-		if tooMuchDataRequestedError(err) {
-			if batchSize == 0 {
-				return 0, 0, errors.New("batch size is zero")
-			}
+	// The authoritative deposit contract differs on either side of the switch block, so a batch
+	// spanning it is served by one query per contract rather than by shortening the batch. Keeping
+	// end untouched matters: the caller records it as the last scanned block and later resumes above
+	// it, so a batch must never report a block it did not query, and must always move forward.
+	queries := s.depositLogQueries(start, end)
+	if len(queries) > 1 {
+		// A batch only splits where it spans the switch, which happens once per historical scan.
+		// Recording it gives operators the one moment the contracts change hands, so a failure just
+		// after it can be tied to the switch rather than hunted for in the execution client.
+		log.WithFields(logrus.Fields{
+			"switchBlock":      s.cfg.depositContractSwitchBlock,
+			"retiredContract":  s.cfg.retiredDepositContractAddr.Hex(),
+			"currentContract":  s.cfg.depositContractAddr.Hex(),
+			"lastDepositIndex": s.lastReceivedMerkleIndex,
+			"blockRange":       fmt.Sprintf("%d-%d", start, end),
+		}).Info("Deposit log scan crossing the deposit contract switch block")
+	}
+	var logs []gethtypes.Log
+	for _, query := range queries {
+		part, err := s.httpLogger.FilterLogs(ctx, query)
+		if err != nil {
+			if tooMuchDataRequestedError(err) {
+				if batchSize == 0 {
+					return 0, 0, errors.New("batch size is zero")
+				}
 
-			// multiplicative decrease
-			batchSize /= multiplicativeDecreaseDivisor
-			return currentBlockNum, batchSize, nil
+				// multiplicative decrease
+				batchSize /= multiplicativeDecreaseDivisor
+				return currentBlockNum, batchSize, nil
+			}
+			return 0, 0, err
 		}
-		return 0, 0, err
+		// Ranges are ascending and disjoint, so appending keeps the logs in block order.
+		logs = append(logs, part...)
 	}
 	// Only request headers before chainstart to correctly determine
 	// genesis.

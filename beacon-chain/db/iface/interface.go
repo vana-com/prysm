@@ -54,6 +54,7 @@ type ReadOnlyDatabase interface {
 	LastValidatedCheckpoint(ctx context.Context) (*ethpb.Checkpoint, error)
 	// Deposit contract related handlers.
 	DepositContractAddress(ctx context.Context) ([]byte, error)
+	AppliedDepositContractSwitch(ctx context.Context) (uint64, bool, error)
 	// ExecutionChainData operations.
 	ExecutionChainData(ctx context.Context) (*ethpb.ETH1ChainData, error)
 	// Fee recipients operations.
@@ -110,6 +111,9 @@ type NoHeadAccessDatabase interface {
 	SaveLastValidatedCheckpoint(ctx context.Context, checkpoint *ethpb.Checkpoint) error
 	// Deposit contract related handlers.
 	SaveDepositContractAddress(ctx context.Context, addr common.Address) error
+	ClearDepositContractAddress(ctx context.Context) error
+	ClearAppliedDepositContractSwitch(ctx context.Context) error
+	SaveAppliedDepositContractSwitch(ctx context.Context, block uint64) error
 	// SaveExecutionChainData operations.
 	SaveExecutionChainData(ctx context.Context, data *ethpb.ETH1ChainData) error
 	// Run any required database migrations.

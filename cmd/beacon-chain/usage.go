@@ -121,6 +121,7 @@ var appHelpFlagGroups = []flagGroup{
 			backfill.BackfillWorkerCount,
 			backfill.EnableExperimentalBackfill,
 			cmd.ClearDB,
+			cmd.ClearDepositContract,
 			cmd.DataDirFlag,
 			cmd.ForceClearDB,
 			cmd.RestoreSourceFileFlag,
@@ -163,6 +164,8 @@ var appHelpFlagGroups = []flagGroup{
 		Name: "execution layer",
 		Flags: []cli.Flag{
 			flags.ContractDeploymentBlock,
+			flags.RetiredDepositContract,
+			flags.DepositContractSwitchBlock,
 			flags.DepositContractFlag,
 			flags.EngineEndpointTimeoutSeconds,
 			flags.Eth1HeaderReqLimit,

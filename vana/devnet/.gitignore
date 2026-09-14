@@ -1,0 +1,12 @@
+# deploy-pipeline.sh runs in this directory and writes all of its state here:
+# execution chaindata, beacon datadirs, generated genesis, validator wallets and
+# keys. A completed run reaches roughly a terabyte.
+#
+# So ignore everything and opt in to the tracked files by name. An allow-list is
+# used rather than a list of generated paths because the cost of missing an entry
+# is committing chaindata or a validator key, and new state directories appear
+# whenever the stack count changes (data2/, cl-data3/, vcdata-*/ and so on).
+*
+!.gitignore
+!README.md
+!deploy-pipeline.sh

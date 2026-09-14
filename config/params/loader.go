@@ -39,8 +39,9 @@ func UnmarshalConfig(yamlFile []byte, conf *BeaconChainConfig) (*BeaconChainConf
 		}
 	}
 	for i, line := range lines {
-		// No need to convert the deposit contract address to byte array (as config expects a string).
-		if strings.HasPrefix(line, "DEPOSIT_CONTRACT_ADDRESS") {
+		// No need to convert the deposit contract addresses to byte arrays (as config expects strings).
+		if strings.HasPrefix(line, "DEPOSIT_CONTRACT_ADDRESS") ||
+			strings.HasPrefix(line, "RETIRED_DEPOSIT_CONTRACT_ADDRESS") {
 			continue
 		}
 		if strings.HasPrefix(line, "CONFIG_NAME") {
@@ -212,6 +213,8 @@ func ConfigToYaml(cfg *BeaconChainConfig) []byte {
 		fmt.Sprintf("TERMINAL_BLOCK_HASH: %#x", cfg.TerminalBlockHash),
 		fmt.Sprintf("TERMINAL_BLOCK_HASH_ACTIVATION_EPOCH: %d", cfg.TerminalBlockHashActivationEpoch),
 		fmt.Sprintf("DEPOSIT_CONTRACT_ADDRESS: %s", cfg.DepositContractAddress),
+		fmt.Sprintf("RETIRED_DEPOSIT_CONTRACT_ADDRESS: %s", cfg.RetiredDepositContractAddress),
+		fmt.Sprintf("DEPOSIT_CONTRACT_SWITCH_BLOCK: %d", cfg.DepositContractSwitchBlock),
 		fmt.Sprintf("MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT: %d", cfg.MaxPerEpochActivationChurnLimit),
 		fmt.Sprintf("MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS: %d", cfg.MinEpochsForBlobsSidecarsRequest),
 		fmt.Sprintf("MAX_REQUEST_BLOCKS_DENEB: %d", cfg.MaxRequestBlocksDeneb),

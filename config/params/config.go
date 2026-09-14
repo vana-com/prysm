@@ -107,6 +107,13 @@ type BeaconChainConfig struct {
 	DepositChainID         uint64 `yaml:"DEPOSIT_CHAIN_ID" spec:"true"`         // DepositChainID of the eth1 network. This used for replay protection.
 	DepositNetworkID       uint64 `yaml:"DEPOSIT_NETWORK_ID" spec:"true"`       // DepositNetworkID of the eth1 network. This used for replay protection.
 	DepositContractAddress string `yaml:"DEPOSIT_CONTRACT_ADDRESS" spec:"true"` // DepositContractAddress is the address of the deposit contract.
+	// RetiredDepositContractAddress is the deposit contract this chain used before DepositContractSwitchBlock.
+	// Empty when the chain has never switched deposit contracts. Not part of the spec, so it is deliberately
+	// not tagged spec:"true" and is never served on /eth/v1/config/spec.
+	RetiredDepositContractAddress string `yaml:"RETIRED_DEPOSIT_CONTRACT_ADDRESS"`
+	// DepositContractSwitchBlock is the first eth1 block at which DepositContractAddress is authoritative.
+	// Below it only RetiredDepositContractAddress may emit deposits. Zero disables the switch entirely.
+	DepositContractSwitchBlock uint64 `yaml:"DEPOSIT_CONTRACT_SWITCH_BLOCK"`
 
 	// Validator parameters.
 	RandomSubnetsPerValidator         uint64 `yaml:"RANDOM_SUBNETS_PER_VALIDATOR" spec:"true"` // RandomSubnetsPerValidator specifies the amount of subnets a validator has to be subscribed to at one time.

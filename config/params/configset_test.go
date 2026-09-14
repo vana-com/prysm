@@ -121,6 +121,8 @@ func compareConfigs(t *testing.T, expected, actual *BeaconChainConfig) {
 	require.DeepEqual(t, expected.DepositChainID, actual.DepositChainID)
 	require.DeepEqual(t, expected.DepositNetworkID, actual.DepositNetworkID)
 	require.DeepEqual(t, expected.DepositContractAddress, actual.DepositContractAddress)
+	require.DeepEqual(t, expected.RetiredDepositContractAddress, actual.RetiredDepositContractAddress)
+	require.DeepEqual(t, expected.DepositContractSwitchBlock, actual.DepositContractSwitchBlock)
 	require.DeepEqual(t, expected.RandomSubnetsPerValidator, actual.RandomSubnetsPerValidator)
 	require.DeepEqual(t, expected.EpochsPerRandomSubnetSubscription, actual.EpochsPerRandomSubnetSubscription)
 	require.DeepEqual(t, expected.EpochsPerHistoricalVector, actual.EpochsPerHistoricalVector)
