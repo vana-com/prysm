@@ -1,9 +1,11 @@
 package doublylinkedtree
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	forkchoicetypes "github.com/OffchainLabs/prysm/v7/beacon-chain/forkchoice/types"
 	"github.com/OffchainLabs/prysm/v7/config/params"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	"github.com/OffchainLabs/prysm/v7/testing/assert"
@@ -578,4 +580,41 @@ func TestForkChoice_missingProposerBoostRoots(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, blk.Root(), headRoot)
 	require.Equal(t, [32]byte{'p'}, f.store.proposerBoostRoot)
+}
+
+// Regression: after a restart forkchoice is rooted at the finalized anchor. A
+// timely block in the anchor's epoch has a dependent root before the anchor.
+// Forkchoice must keep the block and skip only the boost.
+func TestForkChoice_BoostProposerRoot_DependentRootBeforeTreeRoot(t *testing.T) {
+	ctx := t.Context()
+	spe := params.BeaconConfig().SlotsPerEpoch
+	finalized := primitives.Epoch(10)
+	anchor := indexToHash(100)
+	anchorSlot := primitives.Slot(finalized) * spe
+
+	f := New()
+	f.SetBalancesByRooter(func(_ context.Context, _ [32]byte) ([]uint64, error) { return f.justifiedBalances, nil })
+	f.store.justifiedCheckpoint = &forkchoicetypes.Checkpoint{Epoch: finalized, Root: anchor}
+	f.store.finalizedCheckpoint = &forkchoicetypes.Checkpoint{Epoch: finalized, Root: anchor}
+	state, blk, err := prepareForkchoiceState(ctx, anchorSlot, anchor, indexToHash(99), params.BeaconConfig().ZeroHash, finalized, finalized)
+	require.NoError(t, err)
+	require.NoError(t, f.InsertNode(ctx, state, blk))
+
+	timely := indexToHash(101)
+	driftGenesisTime(f, anchorSlot+1, 0)
+	state, blk, err = prepareForkchoiceState(ctx, anchorSlot+1, timely, anchor, params.BeaconConfig().ZeroHash, finalized, finalized)
+	require.NoError(t, err)
+	require.NoError(t, f.InsertNode(ctx, state, blk))
+	require.Equal(t, true, f.HasNode(timely))
+	require.Equal(t, [32]byte{}, f.store.proposerBoostRoot)
+
+	// The chain keeps growing on top of the kept block.
+	next := indexToHash(102)
+	driftGenesisTime(f, anchorSlot+2, 0)
+	state, blk, err = prepareForkchoiceState(ctx, anchorSlot+2, next, timely, params.BeaconConfig().ZeroHash, finalized, finalized)
+	require.NoError(t, err)
+	require.NoError(t, f.InsertNode(ctx, state, blk))
+	head, err := f.Head(ctx)
+	require.NoError(t, err)
+	require.Equal(t, next, head)
 }

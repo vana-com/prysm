@@ -194,15 +194,23 @@ func (s *Store) insert(ctx context.Context,
 			if depEpoch > 0 {
 				depEpoch--
 			}
-			depRoot, err := s.dependentRootForEpoch(root, depEpoch)
-			if err != nil {
-				return nil, errors.Wrap(err, "could not get block dependent root.")
+			depRoot, depErr := s.dependentRootForEpoch(root, depEpoch)
+			if depErr != nil && !errors.Is(depErr, ErrNilNode) {
+				return nil, errors.Wrap(depErr, "could not get block dependent root.")
 			}
-			headDepRoot, err := s.dependentRoot(depEpoch)
-			if err != nil {
-				return nil, errors.Wrap(err, "could not get head dependent root.")
+			headDepRoot, headErr := s.dependentRoot(depEpoch)
+			if headErr != nil && !errors.Is(headErr, ErrNilNode) {
+				return nil, errors.Wrap(headErr, "could not get head dependent root.")
 			}
-			if depRoot == headDepRoot {
+			if depErr != nil || headErr != nil {
+				// The dependent root lies before the forkchoice tree root, as it
+				// does right after a restart. The block is still valid; only the
+				// boost, which needs both shufflings, is skipped.
+				log.WithFields(logrus.Fields{
+					"slot": slot,
+					"root": root,
+				}).Debug("Skipping proposer boost: dependent root precedes forkchoice tree root")
+			} else if depRoot == headDepRoot {
 				s.proposerBoostRoot = root
 			}
 		}
